@@ -1,0 +1,10 @@
+/venv
+__pycache__
+*.pyc
+.DS_Store
+.env
+.idea
+.vscode
+.playwrite_user_data/
+.playwright_user_data/
+logs/

@@ -1,0 +1,14 @@
+--- Transcription started for final judgement day test at 2026-01-14 17:23:39.986993 ---
+[17:24:19] Obaid ch: Hey, what how are you? Can you hear me properly? So, tell me the reason why are you gay?
+[17:24:44] Obaid ch: Okay, can you? Yeah, so let me know about what you are doing today and How? How you're going to implement the transcript feature in your current implementation and
+[17:24:50] Obaid ch: This is jointer in conversation. Okay, so
+[17:25:50] Obaid ch: Give me a little bit of view about your architecture. And how you handling it? Okay. Hamad. Tell me about your boat.
+[17:25:50] Hammad Nasir: Hey, hello. Hello. Can you help me?
+[17:25:50] Obaid ch: Yes, I can hear you.
+[17:25:50] Hammad Nasir: Okay. So what's the progress about the project?
+[17:25:50] Obaid ch: It is your room. It is it is on your side. You tell me what about what is the progress on your project?
+[17:25:50] Hammad Nasir: Oh yeah sorry sorry about that. Actually we are just trying to catch the transcription part and The previous one. Previous part was like repeating. The Transcription again, and again. So now I have made changes to fetch this sentences on.
+[17:25:50] Obaid ch: Okay. So so this is your, this is your first testing after that, okay? so,
+[17:26:02] Obaid ch: Okay. Okay, let me kick your boat and actually verify the results.
+[17:26:02] Hammad Nasir: here should
+--- Transcription ended at 2026-01-14 17:26:13.358644 ---

@@ -1,0 +1,26 @@
+# Meeting Bot Dependencies
+
+# Google APIs for Gmail and Calendar
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.2.0
+google-api-python-client>=2.100.0
+
+# HTTP client
+httpx>=0.25.0
+
+# Scheduling
+APScheduler>=3.10.0
+
+# iCalendar parsing
+icalendar>=6.0.0
+
+# Configuration management
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Browser automation for meeting join
+playwright>=1.40.0
+
+# Date/time utilities
+python-dateutil>=2.8.0

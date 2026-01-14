@@ -1,0 +1,459 @@
+"""
+Main Meeting Bot Application.
+Orchestrates email monitoring, meeting scheduling, and transcription.
+"""
+
+import asyncio
+import signal
+import sys
+import uuid
+from datetime import datetime
+from typing import Optional, List
+from zoneinfo import ZoneInfo
+
+import httpx
+
+from .config import settings, logger, get_logger
+from .email_service import CombinedEmailService
+from .scheduler import MeetingScheduler
+from .meeting_handler import MeetingJoiner
+from .models import MeetingDetails, MeetingSession, TranscriptSegment
+
+main_logger = get_logger("main")
+
+
+class MeetingBot:
+    """
+    Main Meeting Bot orchestrator.
+    
+    Coordinates:
+    - Email monitoring for calendar invites
+    - Meeting scheduling and join automation
+    - Transcription (when implemented)
+    - Backend communication
+    """
+    
+    def __init__(self):
+        """Initialize the Meeting Bot."""
+        self.email_service = CombinedEmailService()
+        self.scheduler = MeetingScheduler()
+        self.http_client: Optional[httpx.AsyncClient] = None
+        self.meeting_joiner: Optional[MeetingJoiner] = None
+        
+        self.active_sessions: Dict[str, MeetingSession] = {} # meeting_id -> session
+        
+        # Shutdown flag
+        self._shutdown_event = asyncio.Event()
+        
+        # Set up scheduler callbacks
+        self.scheduler.set_callbacks(
+            on_meeting_join=self._on_meeting_join,
+            on_meeting_end=self._on_meeting_end,
+            on_email_poll=self._on_email_poll
+        )
+    
+    async def initialize(self) -> bool:
+        """
+        Initialize all services.
+        
+        Returns:
+            True if initialization was successful.
+        """
+        main_logger.info("Initializing Meeting Bot...")
+        
+        # Initialize HTTP client for backend communication
+        self.http_client = httpx.AsyncClient(
+            base_url=settings.backend.url,
+            headers={
+                "X-API-Key": settings.backend.api_key,
+                "Content-Type": "application/json"
+            },
+            timeout=70.0
+        )
+        
+        # Authenticate email services
+        main_logger.info("Authenticating email services...")
+        auth_success = await self.email_service.authenticate_all()
+        
+        if not auth_success:
+            main_logger.error("Failed to authenticate email services")
+            return False
+
+        # Initialize meeting joiner (browser automation)
+        self.meeting_joiner = MeetingJoiner()
+        await self.meeting_joiner.start()
+        
+        main_logger.info("Meeting Bot initialized successfully")
+        return True
+    
+    async def run(self) -> None:
+        """
+        Run the Meeting Bot main loop.
+        
+        This starts the scheduler and runs until shutdown is requested.
+        """
+        if not await self.initialize():
+            main_logger.error("Failed to initialize Meeting Bot")
+            return
+        
+        # Set up signal handlers
+        self._setup_signal_handlers()
+        
+        # Start scheduler
+        self.scheduler.start()
+        main_logger.info("Scheduler started")
+        
+        # Do an immediate poll for meetings
+        main_logger.info("Performing initial email poll...")
+        await self.scheduler.trigger_immediate_poll()
+        
+        # Print status
+        self._print_status()
+        
+        # Run until shutdown
+        main_logger.info("Meeting Bot is running. Press Ctrl+C to stop.")
+        
+        try:
+            await self._shutdown_event.wait()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            await self.shutdown()
+    
+    async def shutdown(self) -> None:
+        """Shutdown the Meeting Bot gracefully."""
+        main_logger.info("Shutting down Meeting Bot...")
+        
+        # Stop scheduler
+        self.scheduler.stop()
+        
+        # End all active sessions
+        for session in list(self.active_sessions.values()):
+            if session.is_active:
+                await self._end_session(session)
+        
+        # Close email services
+        await self.email_service.close()
+        
+        # Stop meeting joiner
+        if self.meeting_joiner:
+            await self.meeting_joiner.stop()
+        
+        # Close HTTP client
+        if self.http_client:
+            await self.http_client.aclose()
+        
+        main_logger.info("Meeting Bot shutdown complete")
+    
+    def _setup_signal_handlers(self) -> None:
+        """Set up signal handlers for graceful shutdown."""
+        # Windows-safe signal handling
+        signal.signal(signal.SIGINT, lambda s, f: self._shutdown_event.set())
+        signal.signal(signal.SIGTERM, lambda s, f: self._shutdown_event.set())
+    
+    async def _handle_shutdown_signal(self) -> None:
+        """Handle shutdown signal."""
+        main_logger.info("Received shutdown signal")
+        self._shutdown_event.set()
+    
+    async def _on_email_poll(self) -> List[MeetingDetails]:
+        """
+        Callback for email polling.
+        
+        Returns:
+            List of new meetings found.
+        """
+        main_logger.debug("Polling for new meetings...")
+        
+        try:
+            meetings = await self.email_service.get_new_meetings(
+                lookahead_hours=settings.scheduler.lookahead_hours
+            )
+            
+            # Report to backend
+            for meeting in meetings:
+                await self._report_meeting_to_backend(meeting)
+                self.email_service.mark_as_scheduled(meeting)
+            
+            return meetings
+            
+        except Exception as e:
+            main_logger.error(f"Email poll error: {e}")
+            return []
+    
+    async def _on_meeting_join(self, meeting: MeetingDetails) -> None:
+        """
+        Callback when it's time to join a meeting.
+        
+        Args:
+            meeting: The meeting to join.
+        """
+        main_logger.info(f"Joining meeting: {meeting.title}")
+        
+        # Check concurrency limit
+        if len(self.active_sessions) >= settings.scheduler.max_concurrent_meetings:
+            main_logger.warning(
+                f"Max concurrent meetings ({settings.scheduler.max_concurrent_meetings}) reached. "
+                f"Cannot join {meeting.title}"
+            )
+            return
+
+        # Check if already active
+        if meeting.meeting_id in self.active_sessions:
+            main_logger.info(f"Meeting {meeting.title} is already active.")
+            return
+        
+        try:
+            # Create session
+            session_id = str(uuid.uuid4())[:16]
+            session = MeetingSession(
+                meeting=meeting,
+                session_id=session_id,
+                started_at=datetime.now(ZoneInfo("UTC"))
+            )
+            self.active_sessions[meeting.meeting_id] = session
+            
+            # Report to backend
+            await self._start_session(session)
+            
+            # Mark meeting as joined
+            meeting.is_joined = True
+
+            # Phase 2 - Actual meeting join via Playwright
+            if self.meeting_joiner:
+                await self.meeting_joiner.join_meeting(meeting)
+            else:
+                # Fallback logging if joiner is not available
+                main_logger.warning("MeetingJoiner not initialized; cannot auto-join.")
+                main_logger.info(f"Meeting URL: {meeting.meeting_url}")
+                main_logger.info(f"Platform: {meeting.platform.value}")
+                main_logger.info(
+                    f"Meeting ends at: {meeting.end_time.strftime('%H:%M')}"
+                )
+            
+        except Exception as e:
+            main_logger.error(f"Failed to join meeting: {e}")
+            # If failed, remove from active sessions
+            if meeting.meeting_id in self.active_sessions:
+                del self.active_sessions[meeting.meeting_id]
+    
+    async def _on_meeting_end(self, meeting: MeetingDetails) -> None:
+        """
+        Callback when a meeting is scheduled to end.
+        
+        Args:
+            meeting: The meeting that is ending.
+        """
+        main_logger.info(f"Meeting ending: {meeting.title}")
+        
+        # End session if it exists
+        if meeting.meeting_id in self.active_sessions:
+            session = self.active_sessions[meeting.meeting_id]
+            await self._end_session(session)
+            del self.active_sessions[meeting.meeting_id]
+        
+        # Mark meeting as completed
+        meeting.is_completed = True
+        
+        # Report to backend
+        await self._report_meeting_completed(meeting)
+    
+    async def _start_session(self, session: MeetingSession) -> None:
+        """
+        Start a new meeting session and report to backend.
+        
+        Args:
+            session: The session to start.
+        """
+        try:
+            # Create session in backend
+            response = await self.http_client.post(
+                "/api/sessions",
+                json={
+                    "session_id": session.session_id,
+                    "meeting_id": session.meeting.meeting_id,
+                    "started_at": session.started_at.isoformat()
+                }
+            )
+            response.raise_for_status()
+            
+            main_logger.info(f"Session started: {session.session_id}")
+            session.is_recording = True
+            session.is_transcribing = True
+            
+        except httpx.HTTPError as e:
+            main_logger.error(f"Failed to start session in backend: {e}")
+    
+    async def _end_session(self, session: MeetingSession) -> None:
+        """
+        End a meeting session and report to backend.
+        
+        Args:
+            session: The session to end.
+        """
+        try:
+            session.ended_at = datetime.now(ZoneInfo("UTC"))
+            session.is_recording = False
+            session.is_transcribing = False
+            
+            # End session in backend
+            response = await self.http_client.patch(
+                f"/api/sessions/{session.session_id}/end",
+                json={"ended_at": session.ended_at.isoformat()}
+            )
+            response.raise_for_status()
+            
+            main_logger.info(f"Session ended: {session.session_id}")
+            
+        except httpx.HTTPError as e:
+            main_logger.error(f"Failed to end session in backend: {e}")
+    
+    async def _report_meeting_to_backend(self, meeting: MeetingDetails) -> None:
+        """
+        Report a meeting to the backend.
+        
+        Args:
+            meeting: The meeting to report.
+        """
+        try:
+            response = await self.http_client.post(
+                "/api/meetings",
+                json={
+                    "meeting_id": meeting.meeting_id,
+                    "title": meeting.title,
+                    "start_time": meeting.start_time.isoformat(),
+                    "end_time": meeting.end_time.isoformat(),
+                    "meeting_url": meeting.meeting_url,
+                    "platform": meeting.platform.value,
+                    "source": meeting.source.value,
+                    "organizer": meeting.organizer,
+                    "organizer_email": meeting.organizer_email,
+                    "attendees": meeting.attendees,
+                    "description": meeting.description,
+                    "location": meeting.location,
+                }
+            )
+            response.raise_for_status()
+            main_logger.debug(f"Meeting reported to backend: {meeting.title}")
+            
+        except httpx.HTTPError as e:
+            main_logger.warning(f"Failed to report meeting to backend: {e}")
+    
+    async def _report_meeting_completed(self, meeting: MeetingDetails) -> None:
+        """
+        Report meeting completion to backend.
+        
+        Args:
+            meeting: The completed meeting.
+        """
+        try:
+            response = await self.http_client.patch(
+                f"/api/meetings/{meeting.meeting_id}/complete"
+            )
+            response.raise_for_status()
+            main_logger.debug(f"Meeting marked completed: {meeting.title}")
+            
+        except httpx.HTTPError as e:
+            main_logger.warning(f"Failed to mark meeting completed: {e}")
+    
+    async def send_transcript(self, segment: TranscriptSegment) -> None:
+        """
+        Send a transcript segment to the backend.
+        
+        Args:
+            segment: The transcript segment to send.
+        """
+        # For now, just use the first active session or implement a lookup if segment has meeting_id
+        if not self.active_sessions:
+            main_logger.warning("No active session for transcript")
+            return
+        
+        # Assuming single session for simplified transcript flow or basic list picking
+        # TODO: segment should ideally contain session tracking info
+        session = list(self.active_sessions.values())[0]
+        
+        try:
+            response = await self.http_client.post(
+                "/api/transcripts",
+                json={
+                    "meeting_id": session.meeting.meeting_id,
+                    "session_id": session.session_id,
+                    "text": segment.text,
+                    "timestamp": segment.timestamp.isoformat(),
+                    "start_offset_seconds": segment.start_offset_seconds,
+                    "end_offset_seconds": segment.end_offset_seconds,
+                    "speaker": segment.speaker,
+                    "confidence": segment.confidence,
+                    "is_final": segment.is_final,
+                }
+            )
+            response.raise_for_status()
+            
+            # Also store locally
+            session.add_transcript(segment)
+            
+        except httpx.HTTPError as e:
+            main_logger.error(f"Failed to send transcript: {e}")
+    
+    def _print_status(self) -> None:
+        """Print current bot status."""
+        scheduled = self.scheduler.get_scheduled_meetings()
+        
+        print("\n" + "=" * 60)
+        print("MEETING BOT STATUS")
+        print("=" * 60)
+        print(f"Email Provider: {settings.email_provider.value}")
+        print(f"Poll Interval: {settings.scheduler.email_poll_interval_seconds} seconds")
+        print(f"Join Before Start: {settings.scheduler.join_before_start_minutes} minutes")
+        print(f"Scheduled Meetings: {len(scheduled)}")
+        
+        if scheduled:
+            print("\nUpcoming Meetings:")
+            for meeting in sorted(scheduled, key=lambda m: m.start_time):
+                print(f"  - {meeting.title}")
+                print(f"    Start: {meeting.start_time.strftime('%Y-%m-%d %H:%M')}")
+                print(f"    Platform: {meeting.platform.value}")
+        
+        print("=" * 60 + "\n")
+    
+    def get_status(self) -> dict:
+        """
+        Get current bot status.
+        
+        Returns:
+            Status dictionary.
+        """
+        return {
+            "running": self.scheduler.is_running,
+            "scheduled_meetings": self.scheduler.scheduled_count,
+            "active_sessions": [s.to_dict() for s in self.active_sessions.values()],
+            "email_provider": settings.email_provider.value,
+            "upcoming_jobs": self.scheduler.get_upcoming_jobs()
+        }
+
+
+async def main():
+    """Main entry point."""
+    print("\n" + "=" * 60)
+    print("MEETING BOT")
+    print("=" * 60)
+    print(f"Starting at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60 + "\n")
+    
+    bot = MeetingBot()
+    await bot.run()
+
+
+def run():
+    """Run the Meeting Bot (synchronous entry point)."""
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nGoodbye!")
+    except Exception as e:
+        print(f"\nFatal error: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    run()
