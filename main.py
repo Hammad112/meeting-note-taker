@@ -213,6 +213,9 @@ class MeetingBot:
         # Print status
         self._print_status()
         
+        # Start periodic status logging
+        status_task = asyncio.create_task(self._periodic_status_logging())
+        
         # Run until shutdown
         main_logger.info("Meeting Bot is running. Press Ctrl+C to stop.")
         
@@ -221,6 +224,12 @@ class MeetingBot:
         except asyncio.CancelledError:
             pass
         finally:
+            # Cancel status task
+            status_task.cancel()
+            try:
+                await status_task
+            except asyncio.CancelledError:
+                pass
             await self.shutdown()
     
     async def shutdown(self) -> None:
@@ -296,7 +305,12 @@ class MeetingBot:
         Args:
             meeting: The meeting to join.
         """
-        main_logger.info(f"Attempting to join meeting: {meeting.title}")
+        main_logger.info("="*80)
+        main_logger.info(f"📅 JOIN REQUEST: {meeting.title}")
+        main_logger.info(f"   🔗 URL: {meeting.meeting_url}")
+        main_logger.info(f"   🏢 Platform: {meeting.platform.value.upper()}")
+        main_logger.info(f"   ⏰ Start: {meeting.start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        main_logger.info(f"   🎯 Meeting ID: {meeting.meeting_id}")
         
         # Check if meeting is within the valid join window
         now = datetime.now(ZoneInfo("UTC"))
@@ -308,30 +322,36 @@ class MeetingBot:
         max_late_join = settings.scheduler.max_join_after_start_minutes
         if time_since_start > max_late_join:
             main_logger.warning(
-                f"Meeting {meeting.title} started {time_since_start:.1f} minutes ago. "
-                f"Skipping join (only join within {max_late_join} minutes after start)."
+                f"❌ SKIPPED: Meeting started {time_since_start:.1f} minutes ago "
+                f"(max allowed: {max_late_join} min)"
             )
+            main_logger.info("="*80)
             return
         
         # Check if meeting has already ended
         if meeting.has_ended:
-            main_logger.warning(f"Meeting {meeting.title} has already ended. Skipping join.")
+            main_logger.warning(f"❌ SKIPPED: Meeting has already ended")
+            main_logger.info("="*80)
             return
         
         # Check concurrency limit
         if len(self.active_sessions) >= settings.scheduler.max_concurrent_meetings:
             main_logger.warning(
-                f"Max concurrent meetings ({settings.scheduler.max_concurrent_meetings}) reached. "
-                f"Cannot join {meeting.title}"
+                f"❌ SKIPPED: Max concurrent meetings reached ({len(self.active_sessions)}/{settings.scheduler.max_concurrent_meetings})"
             )
+            main_logger.info(f"   Active sessions: {', '.join(s.meeting.title for s in self.active_sessions.values())}")
+            main_logger.info("="*80)
             return
 
         # Check if already active
         if meeting.meeting_id in self.active_sessions:
-            main_logger.info(f"Meeting {meeting.title} is already active.")
+            session = self.active_sessions[meeting.meeting_id]
+            main_logger.info(f"ℹ️  ALREADY ACTIVE: Session {session.session_id[:8]}... running for {(datetime.now(ZoneInfo('UTC')) - session.started_at).seconds // 60} minutes")
+            main_logger.info("="*80)
             return
         
-        main_logger.info(f"Joining meeting: {meeting.title}")
+        main_logger.info(f"✅ JOINING: Time since start: {time_since_start:.1f} min (within {max_late_join} min window)")
+        main_logger.info(f"   Active sessions before join: {len(self.active_sessions)}")
         
         try:
             # Create session
@@ -343,6 +363,9 @@ class MeetingBot:
             )
             self.active_sessions[meeting.meeting_id] = session
             
+            main_logger.info(f"🆔 Session created: {session_id}")
+            main_logger.info(f"   📊 Total active sessions: {len(self.active_sessions)}")
+            
             # Report to backend
             await self._start_session(session)
             
@@ -350,22 +373,30 @@ class MeetingBot:
             meeting.is_joined = True
 
             # Phase 2 - Actual meeting join via Playwright
+            main_logger.info(f"🚀 Launching browser for: {meeting.title}")
             if self.meeting_joiner:
                 await self.meeting_joiner.join_meeting(meeting)
+                main_logger.info(f"✅ Browser join completed for: {meeting.title}")
             else:
                 # Fallback logging if joiner is not available
-                main_logger.warning("MeetingJoiner not initialized; cannot auto-join.")
-                main_logger.info(f"Meeting URL: {meeting.meeting_url}")
-                main_logger.info(f"Platform: {meeting.platform.value}")
+                main_logger.warning("⚠️  MeetingJoiner not initialized; cannot auto-join.")
+                main_logger.info(f"   URL: {meeting.meeting_url}")
+                main_logger.info(f"   Platform: {meeting.platform.value}")
                 main_logger.info(
-                    f"Meeting ends at: {meeting.end_time.strftime('%H:%M')}"
+                    f"   Meeting ends at: {meeting.end_time.strftime('%H:%M')}"
                 )
             
+            main_logger.info("="*80)
+            
         except Exception as e:
-            main_logger.error(f"Failed to join meeting: {e}")
+            main_logger.error(f"❌ FAILED to join meeting: {e}")
+            main_logger.error(f"   Meeting: {meeting.title}")
+            main_logger.error(f"   URL: {meeting.meeting_url}")
             # If failed, remove from active sessions
             if meeting.meeting_id in self.active_sessions:
                 del self.active_sessions[meeting.meeting_id]
+                main_logger.info(f"   Removed failed session. Active sessions: {len(self.active_sessions)}")
+            main_logger.info("="*80)
     
     async def _on_meeting_end(self, meeting: MeetingDetails) -> None:
         """
@@ -374,19 +405,101 @@ class MeetingBot:
         Args:
             meeting: The meeting that is ending.
         """
-        main_logger.info(f"Meeting ending: {meeting.title}")
+        main_logger.info("="*80)
+        main_logger.info(f"⏹️  MEETING ENDING: {meeting.title}")
+        main_logger.info(f"   🔗 URL: {meeting.meeting_url}")
+        main_logger.info(f"   🎯 Meeting ID: {meeting.meeting_id}")
         
         # End session if it exists
         if meeting.meeting_id in self.active_sessions:
             session = self.active_sessions[meeting.meeting_id]
+            duration = (datetime.now(ZoneInfo("UTC")) - session.started_at).seconds // 60
+            main_logger.info(f"   ⏱️  Session duration: {duration} minutes")
+            main_logger.info(f"   🆔 Session ID: {session.session_id}")
+            
+            # Check if we should attempt to rejoin
+            if await self._should_rejoin(meeting):
+                main_logger.info(f"🔄 REJOIN TRIGGERED for: {meeting.title}")
+                main_logger.info(f"   Attempt: {meeting.rejoin_attempts + 1}/{meeting.max_rejoin_attempts}")
+                main_logger.info(f"   URL: {meeting.meeting_url}")
+                meeting.rejoin_attempts += 1
+                
+                # Wait a bit before rejoining
+                main_logger.info("   ⏳ Waiting 5 seconds before rejoin...")
+                await asyncio.sleep(5)
+                
+                # Try to rejoin
+                try:
+                    if self.meeting_joiner:
+                        main_logger.info(f"   🚀 Rejoining meeting: {meeting.title}")
+                        await self.meeting_joiner.join_meeting(meeting)
+                        main_logger.info(f"✅ SUCCESSFULLY REJOINED: {meeting.title}")
+                        main_logger.info("="*80)
+                        return  # Don't end the session, we're back in!
+                except Exception as e:
+                    main_logger.error(f"❌ REJOIN FAILED: {e}")
+                    main_logger.error(f"   Meeting: {meeting.title}")
+            
+            # If we didn't rejoin, end the session
+            main_logger.info(f"🛑 ENDING SESSION: {session.session_id}")
             await self._end_session(session)
             del self.active_sessions[meeting.meeting_id]
+            main_logger.info(f"   📊 Remaining active sessions: {len(self.active_sessions)}")
+            if self.active_sessions:
+                main_logger.info(f"   Active: {', '.join(s.meeting.title for s in self.active_sessions.values())}")
         
         # Mark meeting as completed
         meeting.is_completed = True
         
         # Report to backend
         await self._report_meeting_completed(meeting)
+        main_logger.info("="*80)
+    
+    async def _should_rejoin(self, meeting: MeetingDetails) -> bool:
+        """
+        Check if we should attempt to rejoin the meeting.
+        
+        Args:
+            meeting: The meeting to check.
+            
+        Returns:
+            True if we should rejoin.
+        """
+        # Don't rejoin if we were kicked
+        if meeting.was_kicked:
+            main_logger.warning(f"❌ REJOIN DENIED: Bot was kicked from meeting")
+            main_logger.warning(f"   Meeting: {meeting.title}")
+            return False
+        
+        # Don't rejoin if we've exceeded max attempts
+        if meeting.rejoin_attempts >= meeting.max_rejoin_attempts:
+            main_logger.warning(f"❌ REJOIN DENIED: Max attempts reached ({meeting.rejoin_attempts}/{meeting.max_rejoin_attempts})")
+            main_logger.warning(f"   Meeting: {meeting.title}")
+            return False
+        
+        # Check if meeting is still within time window
+        now = datetime.now(ZoneInfo("UTC"))
+        time_since_start = (now - meeting.start_time).total_seconds() / 60
+        max_late_join = settings.scheduler.max_join_after_start_minutes
+        
+        if time_since_start > max_late_join:
+            main_logger.warning(f"❌ REJOIN DENIED: Outside time window")
+            main_logger.warning(f"   Meeting: {meeting.title}")
+            main_logger.warning(f"   Started: {time_since_start:.1f} min ago (max: {max_late_join} min)")
+            return False
+        
+        # Check if meeting end time hasn't passed
+        if now >= meeting.end_time:
+            main_logger.info(f"ℹ️  REJOIN DENIED: Meeting end time has passed")
+            main_logger.info(f"   Meeting: {meeting.title}")
+            return False
+        
+        time_remaining = (meeting.end_time - now).seconds // 60
+        main_logger.info(f"✅ REJOIN APPROVED: {meeting.title}")
+        main_logger.info(f"   Attempt: {meeting.rejoin_attempts + 1}/{meeting.max_rejoin_attempts}")
+        main_logger.info(f"   Time since start: {time_since_start:.1f} min (max: {max_late_join} min)")
+        main_logger.info(f"   Time remaining: {time_remaining} min")
+        return True
     
     async def _start_session(self, session: MeetingSession) -> None:
         """
@@ -529,25 +642,62 @@ class MeetingBot:
         """Print current bot status."""
         scheduled = self.scheduler.get_scheduled_meetings()
         
-        print("\n" + "=" * 60)
+        print("\n" + "="*80)
         print("MEETING BOT STATUS")
-        print("=" * 60)
+        print("="*80)
         print(f"Email Provider: {settings.email_provider.value}")
         print(f"Auth Method: {settings.gmail.auth_method.value}")
         if settings.auth_server.enabled:
             print(f"Auth Server: http://{settings.auth_server.host}:{settings.auth_server.port}")
         print(f"Poll Interval: {settings.scheduler.email_poll_interval_seconds} seconds")
         print(f"Join Before Start: {settings.scheduler.join_before_start_minutes} minutes")
+        print(f"Max Join After Start: {settings.scheduler.max_join_after_start_minutes} minutes")
+        print(f"Max Concurrent Meetings: {settings.scheduler.max_concurrent_meetings}")
         print(f"Scheduled Meetings: {len(scheduled)}")
+        print(f"Active Sessions: {len(self.active_sessions)}")
+        
+        if self.active_sessions:
+            print("\n🟢 ACTIVE SESSIONS:")
+            for meeting_id, session in self.active_sessions.items():
+                duration = (datetime.now(ZoneInfo("UTC")) - session.started_at).seconds // 60
+                print(f"  📍 {session.meeting.title}")
+                print(f"     Session ID: {session.session_id}")
+                print(f"     URL: {session.meeting.meeting_url}")
+                print(f"     Platform: {session.meeting.platform.value.upper()}")
+                print(f"     Duration: {duration} minutes")
+                print(f"     Rejoin attempts: {session.meeting.rejoin_attempts}/{session.meeting.max_rejoin_attempts}")
         
         if scheduled:
-            print("\nUpcoming Meetings:")
+            print("\n📅 UPCOMING MEETINGS:")
             for meeting in sorted(scheduled, key=lambda m: m.start_time):
                 print(f"  - {meeting.title}")
                 print(f"    Start: {meeting.start_time.strftime('%Y-%m-%d %H:%M')}")
                 print(f"    Platform: {meeting.platform.value}")
+                print(f"    URL: {meeting.meeting_url}")
         
-        print("=" * 60 + "\n")
+        print("="*80 + "\n")
+    
+    async def _periodic_status_logging(self) -> None:
+        """Periodically log active session status."""
+        try:
+            while True:
+                # Wait 5 minutes between status updates
+                await asyncio.sleep(300)
+                
+                if self.active_sessions:
+                    main_logger.info("="*80)
+                    main_logger.info("📊 PERIODIC STATUS UPDATE")
+                    main_logger.info(f"   Active Sessions: {len(self.active_sessions)}")
+                    
+                    for meeting_id, session in self.active_sessions.items():
+                        duration = (datetime.now(ZoneInfo("UTC")) - session.started_at).seconds // 60
+                        main_logger.info(f"   🟢 {session.meeting.title}")
+                        main_logger.info(f"      Session: {session.session_id}")
+                        main_logger.info(f"      URL: {session.meeting.meeting_url}")
+                        main_logger.info(f"      Duration: {duration} minutes")
+                    main_logger.info("="*80)
+        except asyncio.CancelledError:
+            pass
     
     def get_status(self) -> dict:
         """
