@@ -4,7 +4,7 @@ Utility functions for extracting meeting URLs from text.
 
 import re
 from typing import Optional, Tuple
-from ..models import MeetingPlatform
+from models import MeetingPlatform
 
 
 # Regex patterns for meeting URLs

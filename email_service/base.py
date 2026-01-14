@@ -4,7 +4,7 @@ Base class for email services.
 
 from abc import ABC, abstractmethod
 from typing import List
-from ..models import MeetingDetails
+from models import MeetingDetails
 
 
 class EmailServiceBase(ABC):

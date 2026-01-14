@@ -24,9 +24,9 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeoutError,
 )
 
-from ..config import settings, get_logger
-from ..models import MeetingDetails, MeetingPlatform
-from ..transcription.service import TranscriptionService
+from config import settings, get_logger
+from models import MeetingDetails, MeetingPlatform
+from transcription.service import TranscriptionService
 import os
 from datetime import datetime
 

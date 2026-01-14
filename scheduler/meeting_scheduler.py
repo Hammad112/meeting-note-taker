@@ -19,8 +19,8 @@ from apscheduler.events import (
     JobExecutionEvent,
 )
 
-from ..models import MeetingDetails
-from ..config import settings, get_logger
+from models import MeetingDetails
+from config import settings, get_logger
 
 logger = get_logger("scheduler")
 

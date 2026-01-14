@@ -8,16 +8,17 @@ import signal
 import sys
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from .config import settings, logger, get_logger
-from .email_service import CombinedEmailService
-from .scheduler import MeetingScheduler
-from .meeting_handler import MeetingJoiner
-from .models import MeetingDetails, MeetingSession, TranscriptSegment
+from config import settings, logger, get_logger
+from email_service import CombinedEmailService
+from scheduler import MeetingScheduler
+from meeting_handler import MeetingJoiner
+from models import MeetingDetails, MeetingSession, TranscriptSegment
+from auth_server import start_auth_server, stop_auth_server
 
 main_logger = get_logger("main")
 
@@ -39,6 +40,8 @@ class MeetingBot:
         self.scheduler = MeetingScheduler()
         self.http_client: Optional[httpx.AsyncClient] = None
         self.meeting_joiner: Optional[MeetingJoiner] = None
+        self.auth_server = None
+        self._auth_only_mode = False  # Flag for when running auth server only
         
         self.active_sessions: Dict[str, MeetingSession] = {} # meeting_id -> session
         
@@ -61,6 +64,21 @@ class MeetingBot:
         """
         main_logger.info("Initializing Meeting Bot...")
         
+        # Start authentication server if enabled
+        if settings.auth_server.enabled:
+            try:
+                self.auth_server = await start_auth_server(
+                    host=settings.auth_server.host,
+                    port=settings.auth_server.port
+                )
+                main_logger.info(
+                    f"Authentication server started at http://{settings.auth_server.host}:{settings.auth_server.port}"
+                )
+                main_logger.info("Users can authenticate at the auth server instead of automatic redirects")
+            except Exception as e:
+                main_logger.warning(f"Failed to start auth server: {e}")
+                main_logger.info("Continuing without auth server...")
+        
         # Initialize HTTP client for backend communication
         self.http_client = httpx.AsyncClient(
             base_url=settings.backend.url,
@@ -77,13 +95,29 @@ class MeetingBot:
         
         if not auth_success:
             main_logger.error("Failed to authenticate email services")
-            return False
+            if settings.auth_server.enabled and self.auth_server:
+                main_logger.info("")
+                main_logger.info("=" * 60)
+                main_logger.info("🔐 AUTHENTICATION REQUIRED")
+                main_logger.info("=" * 60)
+                main_logger.info(f"✨ Auth server: http://{settings.auth_server.host}:{settings.auth_server.port}")
+                main_logger.info("👉 Open the URL above in your browser to authenticate")
+                main_logger.info("⏳ Bot will automatically continue once authenticated")
+                main_logger.info("=" * 60)
+                main_logger.info("")
+                # Keep running with auth server only, don't initialize other services
+                self._auth_only_mode = True
+                return True
+            else:
+                main_logger.error("Auth server is disabled. Cannot authenticate.")
+                return False
 
         # Initialize meeting joiner (browser automation)
         self.meeting_joiner = MeetingJoiner()
         await self.meeting_joiner.start()
         
         main_logger.info("Meeting Bot initialized successfully")
+        self._auth_only_mode = False
         return True
     
     async def run(self) -> None:
@@ -96,9 +130,78 @@ class MeetingBot:
             main_logger.error("Failed to initialize Meeting Bot")
             return
         
-        # Set up signal handlers
-        self._setup_signal_handlers()
+        # If in auth-only mode, wait for authentication to complete
+        if self._auth_only_mode:
+            main_logger.info("Running in authentication-only mode")
+            main_logger.info("🔄 Waiting for authentication to complete...")
+            main_logger.info("   (Authenticate with OAuth at http://localhost:8888)")
+            main_logger.info("   ⚠️  Note: Gmail API requires OAuth - app passwords won't work")
+            self._setup_signal_handlers()
+            
+            # Poll for authentication every 3 seconds
+            token_file = settings.gmail.token_file
+            import os
+            check_count = 0
+            
+            try:
+                while not self._shutdown_event.is_set():
+                    check_count += 1
+                    
+                    # Check if OAuth token file exists
+                    if os.path.exists(token_file):
+                        main_logger.info("✅ OAuth token detected! Continuing initialization...")
+                        
+                        # Re-authenticate now that we have tokens
+                        auth_success = await self.email_service.authenticate_all()
+                        
+                        if auth_success:
+                            main_logger.info("✅ Email services authenticated successfully!")
+                            
+                            # Initialize meeting joiner
+                            self.meeting_joiner = MeetingJoiner()
+                            await self.meeting_joiner.start()
+                            
+                            # Exit auth-only mode
+                            self._auth_only_mode = False
+                            main_logger.info("✅ Full initialization complete!")
+                            break
+                        else:
+                            main_logger.error("❌ Authentication failed. Please try OAuth authentication.")
+                            main_logger.error("   Direct credentials (app passwords) do NOT work with Gmail API")
+                    
+                    # Every 10 checks (30 seconds), try re-authenticating in case user saved credentials
+                    elif check_count % 10 == 0:
+                        auth_success = await self.email_service.authenticate_all()
+                        if auth_success:
+                            main_logger.info("✅ Email services authenticated successfully!")
+                            
+                            # Initialize meeting joiner
+                            self.meeting_joiner = MeetingJoiner()
+                            await self.meeting_joiner.start()
+                            
+                            # Exit auth-only mode
+                            self._auth_only_mode = False
+                            main_logger.info("✅ Full initialization complete!")
+                            break
+                    
+                    # Wait 3 seconds before checking again
+                    try:
+                        await asyncio.wait_for(self._shutdown_event.wait(), timeout=3.0)
+                        # If we get here, shutdown was requested
+                        break
+                    except asyncio.TimeoutError:
+                        # Timeout is expected, continue polling
+                        pass
+                        
+            except asyncio.CancelledError:
+                pass
+            
+            # If still in auth-only mode, shutdown
+            if self._auth_only_mode:
+                await self.shutdown()
+                return
         
+        # Normal operation mode
         # Start scheduler
         self.scheduler.start()
         main_logger.info("Scheduler started")
@@ -124,8 +227,9 @@ class MeetingBot:
         """Shutdown the Meeting Bot gracefully."""
         main_logger.info("Shutting down Meeting Bot...")
         
-        # Stop scheduler
-        self.scheduler.stop()
+        # Stop scheduler (only if not in auth-only mode)
+        if not self._auth_only_mode:
+            self.scheduler.stop()
         
         # End all active sessions
         for session in list(self.active_sessions.values()):
@@ -138,6 +242,10 @@ class MeetingBot:
         # Stop meeting joiner
         if self.meeting_joiner:
             await self.meeting_joiner.stop()
+        
+        # Stop auth server
+        if self.auth_server:
+            await stop_auth_server()
         
         # Close HTTP client
         if self.http_client:
@@ -188,7 +296,27 @@ class MeetingBot:
         Args:
             meeting: The meeting to join.
         """
-        main_logger.info(f"Joining meeting: {meeting.title}")
+        main_logger.info(f"Attempting to join meeting: {meeting.title}")
+        
+        # Check if meeting is within the valid join window
+        now = datetime.now(ZoneInfo("UTC"))
+        time_since_start = (now - meeting.start_time).total_seconds() / 60  # minutes
+        
+        # Only join if:
+        # 1. Meeting hasn't started yet (negative time_since_start), OR
+        # 2. Meeting started less than max_join_after_start_minutes ago
+        max_late_join = settings.scheduler.max_join_after_start_minutes
+        if time_since_start > max_late_join:
+            main_logger.warning(
+                f"Meeting {meeting.title} started {time_since_start:.1f} minutes ago. "
+                f"Skipping join (only join within {max_late_join} minutes after start)."
+            )
+            return
+        
+        # Check if meeting has already ended
+        if meeting.has_ended:
+            main_logger.warning(f"Meeting {meeting.title} has already ended. Skipping join.")
+            return
         
         # Check concurrency limit
         if len(self.active_sessions) >= settings.scheduler.max_concurrent_meetings:
@@ -202,6 +330,8 @@ class MeetingBot:
         if meeting.meeting_id in self.active_sessions:
             main_logger.info(f"Meeting {meeting.title} is already active.")
             return
+        
+        main_logger.info(f"Joining meeting: {meeting.title}")
         
         try:
             # Create session
@@ -403,6 +533,9 @@ class MeetingBot:
         print("MEETING BOT STATUS")
         print("=" * 60)
         print(f"Email Provider: {settings.email_provider.value}")
+        print(f"Auth Method: {settings.gmail.auth_method.value}")
+        if settings.auth_server.enabled:
+            print(f"Auth Server: http://{settings.auth_server.host}:{settings.auth_server.port}")
         print(f"Poll Interval: {settings.scheduler.email_poll_interval_seconds} seconds")
         print(f"Join Before Start: {settings.scheduler.join_before_start_minutes} minutes")
         print(f"Scheduled Meetings: {len(scheduled)}")

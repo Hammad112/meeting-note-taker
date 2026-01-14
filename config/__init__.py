@@ -6,6 +6,7 @@ from .settings import (
     Settings,
     settings,
     EmailProvider,
+    AuthMethod,
     TranscriptionProvider,
     MeetingPlatform,
     GmailSettings,
@@ -13,6 +14,7 @@ from .settings import (
     AudioSettings,
     SchedulerSettings,
     BackendSettings,
+    AuthServerSettings,
 )
 from .logger import logger, get_logger, setup_logging
 
@@ -20,6 +22,7 @@ __all__ = [
     "Settings",
     "settings",
     "EmailProvider",
+    "AuthMethod",
     "TranscriptionProvider",
     "MeetingPlatform",
     "GmailSettings",
@@ -27,6 +30,7 @@ __all__ = [
     "AudioSettings",
     "SchedulerSettings",
     "BackendSettings",
+    "AuthServerSettings",
     "logger",
     "get_logger",
     "setup_logging",

@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from ..config import get_logger
+from config import get_logger
 
 logger = get_logger("transcription_service")
 

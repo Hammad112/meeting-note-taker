@@ -20,6 +20,7 @@ class MeetingSource(str, Enum):
     """Source of the meeting invite."""
     GMAIL = "gmail"
     OUTLOOK = "outlook"
+    CALENDAR_API = "calendar_api"
     MANUAL = "manual"
 
 

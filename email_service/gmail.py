@@ -21,8 +21,8 @@ from googleapiclient.errors import HttpError
 from .base import EmailServiceBase
 from .ical_parser import parse_icalendar
 from .url_extractor import extract_meeting_url, clean_html
-from ..models import MeetingDetails, MeetingPlatform, MeetingSource
-from ..config import settings, get_logger
+from models import MeetingDetails, MeetingPlatform, MeetingSource
+from config import settings, get_logger, AuthMethod
 
 logger = get_logger("gmail")
 
@@ -46,6 +46,44 @@ class GmailService(EmailServiceBase):
     
     async def authenticate(self) -> bool:
         """
+        Authenticate with Gmail using configured method.
+        
+        Returns:
+            True if authentication was successful.
+        """
+        auth_method = self._settings.auth_method
+        
+        # Gmail API only supports OAuth2 authentication
+        # App passwords work with IMAP/SMTP/POP3, but not with Gmail REST API
+        
+        if auth_method == AuthMethod.CREDENTIALS:
+            logger.error("❌ Gmail API does not support direct credentials (app passwords)")
+            logger.error("   Gmail API requires OAuth2 authentication")
+            logger.error("   Please set GMAIL_AUTH_METHOD=oauth or auto")
+            logger.error(f"   Authenticate at: http://localhost:{settings.auth_server.port}/auth/gmail/start")
+            return False
+        
+        # AUTO or OAUTH mode: Use OAuth authentication
+        if auth_method in [AuthMethod.AUTO, AuthMethod.OAUTH]:
+            # Check for existing OAuth token
+            if os.path.exists(self._settings.token_file):
+                logger.info("Found OAuth token file, attempting authentication")
+                if await self._authenticate_oauth():
+                    return True
+            
+            # No valid token found
+            logger.error("❌ No valid OAuth token found")
+            logger.error(f"   Please authenticate at: http://localhost:{settings.auth_server.port}/auth/gmail/start")
+            return False
+        
+        return False
+    
+    # Note: Direct credentials (app passwords) are NOT supported by Gmail API
+    # Gmail API only supports OAuth2 authentication
+    # This method has been removed as it cannot work with Gmail REST API
+    
+    async def _authenticate_oauth(self) -> bool:
+        """
         Authenticate with Gmail using OAuth2.
         
         Returns:
@@ -64,30 +102,21 @@ class GmailService(EmailServiceBase):
                 except Exception as e:
                     logger.warning(f"Failed to load existing token: {e}")
             
-            # If no valid credentials, go through OAuth flow
+            # If no valid credentials, user must authenticate via auth server
             if not creds or not creds.valid:
                 if creds and creds.expired and creds.refresh_token:
                     logger.info("Refreshing expired Gmail token...")
                     creds.refresh(Request())
-                else:
-                    if not os.path.exists(self._settings.credentials_file):
-                        logger.error(
-                            f"Gmail credentials file not found: {self._settings.credentials_file}\n"
-                            "Please download OAuth2 credentials from Google Cloud Console."
-                        )
-                        return False
                     
-                    logger.info("Starting Gmail OAuth2 flow...")
-                    flow = InstalledAppFlow.from_client_secrets_file(
-                        self._settings.credentials_file,
-                        self._settings.scopes
+                    # Save refreshed token
+                    with open(self._settings.token_file, 'w') as token:
+                        token.write(creds.to_json())
+                else:
+                    logger.error(
+                        "No valid OAuth token found. Please authenticate using the Auth Server:\n"
+                        f"Visit: http://localhost:{settings.auth_server.port}/auth/gmail/start"
                     )
-                    creds = flow.run_local_server(port=8401)
-                
-                # Save the credentials for future runs
-                with open(self._settings.token_file, 'w') as token:
-                    token.write(creds.to_json())
-                logger.info(f"Gmail token saved to {self._settings.token_file}")
+                    return False
             
             self.credentials = creds
             
@@ -95,11 +124,11 @@ class GmailService(EmailServiceBase):
             self.gmail_service = build('gmail', 'v1', credentials=creds)
             self.calendar_service = build('calendar', 'v3', credentials=creds)
             
-            logger.info("Gmail authentication successful")
+            logger.info("Gmail OAuth authentication successful")
             return True
             
         except Exception as e:
-            logger.error(f"Gmail authentication failed: {e}")
+            logger.error(f"Gmail OAuth authentication failed: {e}")
             return False
     
     async def refresh_token(self) -> bool:

@@ -1,10 +1,11 @@
 """
-Email service module for fetching calendar invites from Gmail.
+Email service module for fetching calendar invites from Gmail or Calendar API.
 """
 
 from typing import List, Optional
 from .base import EmailServiceBase
 from .gmail import GmailService
+from .calendar_api import CalendarAPIService
 from .ical_parser import parse_icalendar
 from .url_extractor import (
     extract_meeting_url,
@@ -12,8 +13,8 @@ from .url_extractor import (
     detect_platform_from_url,
     clean_html,
 )
-from ..models import MeetingDetails
-from ..config import settings, EmailProvider, get_logger
+from models import MeetingDetails
+from config import settings, EmailProvider, get_logger
 
 logger = get_logger("email_service")
 
@@ -34,6 +35,13 @@ class EmailServiceFactory:
         """
         services = []
         
+        # Use Calendar API endpoint (no OAuth needed)
+        if provider == EmailProvider.CALENDAR_API:
+            services.append(CalendarAPIService())
+            logger.info("Calendar API service initialized")
+            return services
+        
+        # Traditional OAuth-based providers
         if provider in (EmailProvider.GMAIL, EmailProvider.BOTH):
             services.append(GmailService())
             logger.info("Gmail service initialized")

@@ -13,7 +13,15 @@ class EmailProvider(str, Enum):
     """Supported email providers."""
     GMAIL = "gmail"
     OUTLOOK = "outlook"
+    CALENDAR_API = "calendar_api"  # Use backend calendar API endpoint
     BOTH = "both"
+
+
+class AuthMethod(str, Enum):
+    """Authentication methods."""
+    OAUTH = "oauth"
+    CREDENTIALS = "credentials"
+    AUTO = "auto"
 
 
 class TranscriptionProvider(str, Enum):
@@ -34,6 +42,10 @@ class GmailSettings(BaseSettings):
     """Gmail-specific configuration."""
     model_config = SettingsConfigDict(env_prefix="GMAIL_")
     
+    auth_method: AuthMethod = Field(
+        default=AuthMethod.AUTO,
+        description="Authentication method: oauth, credentials, or auto"
+    )
     credentials_file: str = Field(
         default="credentials/gmail_credentials.json",
         description="Path to Gmail OAuth2 credentials JSON file"
@@ -41,6 +53,18 @@ class GmailSettings(BaseSettings):
     token_file: str = Field(
         default="credentials/gmail_token.json",
         description="Path to store Gmail OAuth2 token"
+    )
+    direct_credentials_file: str = Field(
+        default="credentials/gmail_direct_credentials.json",
+        description="Path to direct credentials (email/password)"
+    )
+    email: str = Field(
+        default="",
+        description="Gmail email address (for direct credentials)"
+    )
+    password: str = Field(
+        default="",
+        description="Gmail app password or token (for direct credentials)"
     )
     scopes: List[str] = Field(
         default=[
@@ -149,6 +173,10 @@ class SchedulerSettings(BaseSettings):
         default=1,
         description="Join meeting X minutes before start time"
     )
+    max_join_after_start_minutes: int = Field(
+        default=10,
+        description="Maximum minutes after start time to allow joining (prevents joining very late)"
+    )
     lookahead_hours: int = Field(
         default=24,
         description="Look for meetings within the next X hours"
@@ -177,6 +205,24 @@ class BackendSettings(BaseSettings):
     )
 
 
+class AuthServerSettings(BaseSettings):
+    """Authentication server configuration."""
+    model_config = SettingsConfigDict(env_prefix="AUTH_SERVER_")
+    
+    enabled: bool = Field(
+        default=True,
+        description="Enable authentication server"
+    )
+    host: str = Field(
+        default="localhost",
+        description="Auth server host"
+    )
+    port: int = Field(
+        default=8888,
+        description="Auth server port"
+    )
+
+
 class Settings(BaseSettings):
     """Main application settings."""
     model_config = SettingsConfigDict(
@@ -199,6 +245,7 @@ class Settings(BaseSettings):
     audio: AudioSettings = Field(default_factory=AudioSettings)
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     backend: BackendSettings = Field(default_factory=BackendSettings)
+    auth_server: AuthServerSettings = Field(default_factory=AuthServerSettings)
     
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")

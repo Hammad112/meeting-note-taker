@@ -9,6 +9,9 @@ google-api-python-client>=2.100.0
 # HTTP client
 httpx>=0.25.0
 
+# Web server for authentication
+aiohttp>=3.9.0
+
 # Scheduling
 APScheduler>=3.10.0
 

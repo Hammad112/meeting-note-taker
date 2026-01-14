@@ -11,9 +11,9 @@ from icalendar import Calendar
 from dateutil.rrule import rrulestr
 from dateutil.parser import parse as parse_date
 
-from ..models import MeetingDetails, MeetingPlatform, MeetingSource
+from models import MeetingDetails, MeetingPlatform, MeetingSource
 from .url_extractor import extract_meeting_url, clean_html
-from ..config import get_logger
+from config import get_logger
 
 logger = get_logger("ical_parser")
 
