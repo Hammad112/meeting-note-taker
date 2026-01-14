@@ -48,6 +48,9 @@ class MeetingDetails:
     is_scheduled: bool = False
     is_joined: bool = False
     is_completed: bool = False
+    was_kicked: bool = False
+    rejoin_attempts: int = 0
+    max_rejoin_attempts: int = 3
     
     # Raw data for debugging
     raw_event_id: Optional[str] = None
@@ -105,6 +108,9 @@ class MeetingDetails:
             "is_scheduled": self.is_scheduled,
             "is_joined": self.is_joined,
             "is_completed": self.is_completed,
+            "was_kicked": self.was_kicked,
+            "rejoin_attempts": self.rejoin_attempts,
+            "max_rejoin_attempts": self.max_rejoin_attempts,
         }
 
 

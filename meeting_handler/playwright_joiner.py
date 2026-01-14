@@ -300,8 +300,9 @@ class MeetingJoiner:
             # Priority: Guest Name Input
             name_input = page.get_by_placeholder("Your name")
             if await name_input.is_visible(timeout=10000):
-                logger.info("Guest mode detected. Entering bot name...")
-                await name_input.fill("Meeting Bot")
+                bot_name = meeting.title  # Use the bot name from meeting details
+                logger.info(f"Guest mode detected. Entering bot name: {bot_name}...")
+                await name_input.fill(bot_name)
                 # Proceed to click Join
             else:
                 # If no guest input, check for login

@@ -26,19 +26,21 @@ class AuthServer:
     Provides endpoints for users to authenticate without automatic redirects.
     """
     
-    def __init__(self, host: str = "localhost", port: int = 8888):
+    def __init__(self, host: str = "localhost", port: int = 8888, meeting_bot = None):
         """
         Initialize the auth server.
         
         Args:
             host: Host to bind the server to.
             port: Port to bind the server to.
+            meeting_bot: Reference to main MeetingBot for manual joins.
         """
         self.host = host
         self.port = port
         self.app = web.Application()
         self.runner: Optional[web.AppRunner] = None
         self.site: Optional[web.TCPSite] = None
+        self.meeting_bot = meeting_bot
         
         # Store pending OAuth flows
         self._flows: Dict[str, Flow] = {}
@@ -55,6 +57,9 @@ class AuthServer:
         # Credentials endpoint removed - Gmail API only supports OAuth
         self.app.router.add_get('/auth/status', self._auth_status)
         self.app.router.add_get('/health', self._health_check)
+        # Manual join routes
+        self.app.router.add_get('/join', self._manual_join_page)
+        self.app.router.add_post('/join', self._manual_join_handler)
     
     async def start(self) -> None:
         """Start the authentication server."""
@@ -161,7 +166,13 @@ class AuthServer:
         </head>
         <body>
             <div class="container">
-                <h1>🤖 Meeting Bot - Authentication</h1>
+                <h1>🤖 Meeting Bot</h1>
+                
+                <div class="auth-option">
+                    <h2>🚀 Quick Join Meeting</h2>
+                    <p>Join any meeting instantly without authentication.</p>
+                    <a href="/join" class="button">➡️ Join Meeting Now</a>
+                </div>
                 
                 <div class="info">
                     <p><strong>Gmail Authentication:</strong></p>
@@ -420,6 +431,255 @@ class AuthServer:
             logger.error(f"Error saving credentials: {e}")
             return web.json_response({'error': str(e)}, status=500)
     
+    async def _manual_join_page(self, request: web.Request) -> web.Response:
+        """Display manual meeting join page."""
+        html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Join Meeting - Meeting Bot</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    max-width: 800px;
+                    margin: 50px auto;
+                    padding: 20px;
+                    background-color: #f5f5f5;
+                }
+                .container {
+                    background: white;
+                    padding: 30px;
+                    border-radius: 8px;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                }
+                h1 {
+                    color: #333;
+                }
+                .form-group {
+                    margin: 20px 0;
+                }
+                label {
+                    display: block;
+                    margin-bottom: 8px;
+                    color: #333;
+                    font-weight: bold;
+                }
+                input[type="text"] {
+                    width: 100%;
+                    padding: 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    box-sizing: border-box;
+                    font-size: 16px;
+                }
+                button {
+                    background-color: #0066cc;
+                    color: white;
+                    padding: 14px 28px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 16px;
+                    font-weight: bold;
+                    width: 100%;
+                    margin-top: 10px;
+                }
+                button:hover {
+                    background-color: #0052a3;
+                }
+                button:disabled {
+                    background-color: #ccc;
+                    cursor: not-allowed;
+                }
+                .status {
+                    margin-top: 20px;
+                    padding: 15px;
+                    border-radius: 4px;
+                    display: none;
+                }
+                .status.success {
+                    background-color: #d4edda;
+                    color: #155724;
+                    border: 1px solid #c3e6cb;
+                    display: block;
+                }
+                .status.error {
+                    background-color: #f8d7da;
+                    color: #721c24;
+                    border: 1px solid #f5c6cb;
+                    display: block;
+                }
+                .info {
+                    background-color: #d1ecf1;
+                    padding: 15px;
+                    border-radius: 4px;
+                    margin: 20px 0;
+                    border: 1px solid #bee5eb;
+                }
+                .back-link {
+                    display: inline-block;
+                    margin-bottom: 20px;
+                    color: #0066cc;
+                    text-decoration: none;
+                }
+                .back-link:hover {
+                    text-decoration: underline;
+                }
+                .example {
+                    color: #666;
+                    font-size: 14px;
+                    margin-top: 5px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <a href="/" class="back-link">← Back to Home</a>
+                <h1>🚀 Join Meeting</h1>
+                
+                <div class="info">
+                    <p><strong>Quick Join:</strong></p>
+                    <p>Join any Google Meet, Zoom, or Teams meeting instantly without authentication.</p>
+                    <p>The bot will join the meeting and start transcription automatically.</p>
+                </div>
+                
+                <form id="joinForm">
+                    <div class="form-group">
+                        <label for="botName">Bot Name</label>
+                        <input 
+                            type="text" 
+                            id="botName" 
+                            name="botName" 
+                            placeholder="Enter bot display name"
+                            required
+                        />
+                        <div class="example">Example: Meeting Transcriber Bot</div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="meetingUrl">Meeting URL</label>
+                        <input 
+                            type="text" 
+                            id="meetingUrl" 
+                            name="meetingUrl" 
+                            placeholder="Enter meeting URL"
+                            required
+                        />
+                        <div class="example">Example: https://meet.google.com/abc-defg-hij</div>
+                    </div>
+                    
+                    <button type="submit" id="joinButton">Join Meeting</button>
+                </form>
+                
+                <div id="statusDisplay" class="status"></div>
+            </div>
+            
+            <script>
+                document.getElementById('joinForm').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    
+                    const botName = document.getElementById('botName').value;
+                    const meetingUrl = document.getElementById('meetingUrl').value;
+                    const joinButton = document.getElementById('joinButton');
+                    const statusDisplay = document.getElementById('statusDisplay');
+                    
+                    // Disable button and show loading
+                    joinButton.disabled = true;
+                    joinButton.textContent = 'Joining...';
+                    statusDisplay.className = 'status';
+                    statusDisplay.style.display = 'none';
+                    
+                    try {
+                        const response = await fetch('/join', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify({
+                                bot_name: botName,
+                                meeting_url: meetingUrl
+                            })
+                        });
+                        
+                        const result = await response.json();
+                        
+                        if (response.ok) {
+                            statusDisplay.className = 'status success';
+                            statusDisplay.innerHTML = `
+                                <strong>✅ Success!</strong><br>
+                                Bot is joining the meeting...<br><br>
+                                <strong>Meeting ID:</strong> ${result.meeting_id}<br>
+                                <strong>Session ID:</strong> ${result.session_id}<br>
+                                <strong>Platform:</strong> ${result.platform}<br><br>
+                                The bot will start transcription automatically.
+                            `;
+                            
+                            // Reset form
+                            document.getElementById('joinForm').reset();
+                        } else {
+                            statusDisplay.className = 'status error';
+                            statusDisplay.innerHTML = `<strong>❌ Error:</strong> ${result.error || 'Failed to join meeting'}`;
+                        }
+                    } catch (error) {
+                        statusDisplay.className = 'status error';
+                        statusDisplay.innerHTML = `<strong>❌ Error:</strong> ${error.message}`;
+                    } finally {
+                        joinButton.disabled = false;
+                        joinButton.textContent = 'Join Meeting';
+                    }
+                });
+            </script>
+        </body>
+        </html>
+        """
+        return web.Response(text=html, content_type='text/html')
+    
+    async def _manual_join_handler(self, request: web.Request) -> web.Response:
+        """Handle manual meeting join request."""
+        try:
+            data = await request.json()
+            bot_name = data.get('bot_name', '').strip()
+            meeting_url = data.get('meeting_url', '').strip()
+            
+            # Validate inputs
+            if not bot_name:
+                return web.json_response({'error': 'Bot name is required'}, status=400)
+            
+            if not meeting_url:
+                return web.json_response({'error': 'Meeting URL is required'}, status=400)
+            
+            # Validate URL format
+            if not any(domain in meeting_url.lower() for domain in ['meet.google.com', 'zoom.us', 'teams.microsoft.com']):
+                return web.json_response({
+                    'error': 'Invalid meeting URL. Supported platforms: Google Meet, Zoom, Teams'
+                }, status=400)
+            
+            # Check if meeting bot is available
+            if not self.meeting_bot:
+                return web.json_response({
+                    'error': 'Meeting bot is not initialized'
+                }, status=503)
+            
+            # Trigger manual join
+            result = await self.meeting_bot.manual_join_meeting(bot_name, meeting_url)
+            
+            if result.get('success'):
+                return web.json_response({
+                    'success': True,
+                    'meeting_id': result['meeting_id'],
+                    'session_id': result['session_id'],
+                    'platform': result['platform'],
+                    'message': 'Bot is joining the meeting'
+                })
+            else:
+                return web.json_response({
+                    'error': result.get('error', 'Failed to join meeting')
+                }, status=400)
+                
+        except Exception as e:
+            logger.error(f"Error in manual join: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+    
     async def _auth_status(self, request: web.Request) -> web.Response:
         """Get authentication status."""
         return web.json_response({
@@ -455,13 +715,14 @@ _server_thread: Optional[threading.Thread] = None
 _event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
-async def start_auth_server(host: str = "localhost", port: int = 8888) -> AuthServer:
+async def start_auth_server(host: str = "localhost", port: int = 8888, meeting_bot = None) -> AuthServer:
     """
     Start the authentication server.
     
     Args:
         host: Host to bind to.
         port: Port to bind to.
+        meeting_bot: Reference to MeetingBot for manual joins.
         
     Returns:
         AuthServer instance.
@@ -469,8 +730,11 @@ async def start_auth_server(host: str = "localhost", port: int = 8888) -> AuthSe
     global _auth_server
     
     if _auth_server is None:
-        _auth_server = AuthServer(host, port)
+        _auth_server = AuthServer(host, port, meeting_bot)
         await _auth_server.start()
+    else:
+        # Update meeting_bot reference if server already exists
+        _auth_server.meeting_bot = meeting_bot
     
     return _auth_server
 

@@ -69,7 +69,8 @@ class MeetingBot:
             try:
                 self.auth_server = await start_auth_server(
                     host=settings.auth_server.host,
-                    port=settings.auth_server.port
+                    port=settings.auth_server.port,
+                    meeting_bot=self
                 )
                 main_logger.info(
                     f"Authentication server started at http://{settings.auth_server.host}:{settings.auth_server.port}"
@@ -231,6 +232,92 @@ class MeetingBot:
             except asyncio.CancelledError:
                 pass
             await self.shutdown()
+    
+    async def manual_join_meeting(self, bot_name: str, meeting_url: str) -> dict:
+        """
+        Manually join a meeting without email polling.
+        
+        Args:
+            bot_name: Display name for the bot.
+            meeting_url: Meeting URL to join.
+            
+        Returns:
+            Result dictionary with success status.
+        """
+        try:
+            from models import MeetingPlatform, MeetingSource
+            
+            # Detect platform from URL
+            platform = None
+            if 'meet.google.com' in meeting_url.lower():
+                platform = MeetingPlatform.GOOGLE_MEET
+            elif 'zoom.us' in meeting_url.lower():
+                platform = MeetingPlatform.ZOOM
+            elif 'teams.microsoft.com' in meeting_url.lower():
+                platform = MeetingPlatform.TEAMS
+            else:
+                return {'success': False, 'error': 'Unsupported meeting platform'}
+            
+            # Create meeting details
+            meeting_id = f"manual_{uuid.uuid4().hex[:12]}"
+            now = datetime.now(ZoneInfo("UTC"))
+            
+            meeting = MeetingDetails(
+                meeting_id=meeting_id,
+                title=bot_name,
+                start_time=now,
+                end_time=now.replace(hour=23, minute=59),  # End of day
+                meeting_url=meeting_url,
+                platform=platform,
+                source=MeetingSource.MANUAL,
+                organizer=bot_name,
+                description=f"Manual join by {bot_name}"
+            )
+            
+            # Initialize meeting joiner if not already done
+            if not self.meeting_joiner:
+                self.meeting_joiner = MeetingJoiner()
+                await self.meeting_joiner.start()
+            
+            # Create session
+            session_id = str(uuid.uuid4())[:16]
+            session = MeetingSession(
+                meeting=meeting,
+                session_id=session_id,
+                started_at=now
+            )
+            self.active_sessions[meeting_id] = session
+            
+            main_logger.info("="*80)
+            main_logger.info(f"🚀 MANUAL JOIN REQUEST")
+            main_logger.info(f"   Bot Name: {bot_name}")
+            main_logger.info(f"   🔗 URL: {meeting_url}")
+            main_logger.info(f"   🏢 Platform: {platform.value.upper()}")
+            main_logger.info(f"   🎯 Meeting ID: {meeting_id}")
+            main_logger.info(f"   🆔 Session ID: {session_id}")
+            main_logger.info("="*80)
+            
+            # Report to backend
+            await self._start_session(session)
+            
+            # Mark as joined
+            meeting.is_joined = True
+            
+            # Join the meeting
+            asyncio.create_task(self.meeting_joiner.join_meeting(meeting))
+            
+            main_logger.info(f"✅ Manual join initiated for: {bot_name}")
+            
+            return {
+                'success': True,
+                'meeting_id': meeting_id,
+                'session_id': session_id,
+                'platform': platform.value
+            }
+            
+        except Exception as e:
+            main_logger.error(f"❌ Manual join failed: {e}")
+            return {'success': False, 'error': str(e)}
     
     async def shutdown(self) -> None:
         """Shutdown the Meeting Bot gracefully."""
