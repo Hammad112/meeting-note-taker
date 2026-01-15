@@ -47,8 +47,9 @@ class MeetingScheduler:
             timezone=ZoneInfo("UTC")
         )
         
-        # Track scheduled meetings
+        # Track scheduled meetings by ID and by URL
         self._scheduled_meetings: Dict[str, MeetingDetails] = {}
+        self._scheduled_urls: set = set()  # Track URLs to prevent duplicates
         
         # Callbacks
         self._on_meeting_join: Optional[Callable[[MeetingDetails], Awaitable[None]]] = None
@@ -146,9 +147,14 @@ class MeetingScheduler:
         Returns:
             True if scheduled successfully.
         """
-        # Check if already scheduled
+        # Check if already scheduled by ID
         if meeting.meeting_id in self._scheduled_meetings:
-            logger.debug(f"Meeting already scheduled: {meeting.title}")
+            logger.debug(f"Meeting already scheduled by ID: {meeting.title}")
+            return False
+        
+        # Check if already scheduled by URL (prevents duplicates from different providers)
+        if meeting.meeting_url in self._scheduled_urls:
+            logger.debug(f"Meeting URL already scheduled: {meeting.meeting_url}")
             return False
         
         # Check if meeting has already ended
@@ -197,8 +203,9 @@ class MeetingScheduler:
                 misfire_grace_time=60
             )
             
-            # Track scheduled meeting
+            # Track scheduled meeting by ID and URL
             self._scheduled_meetings[meeting.meeting_id] = meeting
+            self._scheduled_urls.add(meeting.meeting_url)
             meeting.is_scheduled = True
             
             logger.info(
@@ -254,6 +261,8 @@ class MeetingScheduler:
         """
         # Remove from tracking
         if meeting_id in self._scheduled_meetings:
+            meeting = self._scheduled_meetings[meeting_id]
+            self._scheduled_urls.discard(meeting.meeting_url)
             del self._scheduled_meetings[meeting_id]
         
         # Remove any remaining jobs

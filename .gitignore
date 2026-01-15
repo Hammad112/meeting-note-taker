@@ -8,3 +8,5 @@ __pycache__
 .playwrite_user_data/
 .playwright_user_data/
 logs/
+credentials/gmail_token.json
+credentials/outlook_token.json

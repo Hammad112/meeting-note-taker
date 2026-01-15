@@ -20,6 +20,8 @@ from pydantic import BaseModel
 
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
+from msal import ConfidentialClientApplication
+from datetime import timedelta
 
 from config import settings, get_logger
 
@@ -52,6 +54,7 @@ class AuthServer:
         # Store pending OAuth flows
         self._flows: Dict[str, Flow] = {}
         self._credentials: Dict[str, Any] = {}
+        self._msal_app: Optional[ConfidentialClientApplication] = None
         
         # Initialize FastAPI app
         self.app = FastAPI(
@@ -89,6 +92,14 @@ class AuthServer:
         @self.app.get("/auth/gmail/callback", response_class=HTMLResponse, tags=["Authentication"])
         async def gmail_auth_callback(request: Request):
             return await self._gmail_auth_callback(request)
+            
+        @self.app.get("/auth/outlook/start", tags=["Authentication"])
+        async def outlook_auth_start():
+            return await self._outlook_auth_start()
+            
+        @self.app.get("/auth/outlook/callback", response_class=HTMLResponse, tags=["Authentication"])
+        async def outlook_auth_callback(request: Request):
+            return await self._outlook_auth_callback(request)
             
         @self.app.get("/auth/status", tags=["Status"])
         async def auth_status():
@@ -239,7 +250,14 @@ class AuthServer:
                 </div>
                 
                 <div class="auth-option">
-                    <h2>📊 Authentication Status</h2>
+                    <h2>� Outlook OAuth Authentication</h2>
+                    <p>Securely authenticate using your Microsoft account through OAuth2.</p>
+                    <p>Works with Outlook.com, Microsoft 365, and personal Microsoft accounts.</p>
+                    <a href="/auth/outlook/start" class="button">🔐 Authenticate with Microsoft</a>
+                </div>
+                
+                <div class="auth-option">
+                    <h2>�📊 Authentication Status</h2>
                     <button onclick="checkStatus()">Check Status</button>
                     <div id="statusDisplay"></div>
                 </div>
@@ -428,6 +446,277 @@ class AuthServer:
                     <h1>❌ Authentication Error</h1>
                     <p>Error: {str(e)}</p>
                     <a href="/">Go back</a>
+                </body>
+            </html>
+            """
+    
+    def _get_msal_app(self) -> ConfidentialClientApplication:
+        """Get or create cached MSAL app for Outlook OAuth."""
+        if self._msal_app is None:
+            outlook_settings = settings.outlook
+            authority = f"https://login.microsoftonline.com/{outlook_settings.tenant_id}"
+            self._msal_app = ConfidentialClientApplication(
+                client_id=outlook_settings.client_id,
+                client_credential=outlook_settings.client_secret,
+                authority=authority
+            )
+        return self._msal_app
+    
+    async def _outlook_auth_start(self):
+        """Start Outlook OAuth flow."""
+        try:
+            outlook_settings = settings.outlook
+            
+            if not outlook_settings.client_id:
+                raise HTTPException(
+                    status_code=400, 
+                    detail='Outlook client_id not configured. Set OUTLOOK_CLIENT_ID in .env'
+                )
+            
+            # Use cached MSAL app
+            app = self._get_msal_app()
+            
+            # Build auth URL - exclude reserved scopes, MSAL handles them automatically
+            reserved_scopes = {"openid", "offline_access", "profile"}
+            scopes = [
+                f"https://graph.microsoft.com/{scope}"
+                for scope in outlook_settings.scopes
+                if scope not in reserved_scopes
+            ]
+            
+            auth_url = app.get_authorization_request_url(
+                scopes=scopes,
+                redirect_uri=outlook_settings.redirect_uri
+            )
+            
+            logger.info(f"Starting Outlook OAuth flow, redirect to: {outlook_settings.redirect_uri}")
+            
+            # Redirect to Microsoft
+            return RedirectResponse(auth_url)
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error starting Outlook OAuth: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    async def _outlook_auth_callback(self, request: Request) -> str:
+        """Handle Outlook OAuth callback."""
+        try:
+            code = request.query_params.get('code')
+            error = request.query_params.get('error')
+            
+            if error:
+                error_desc = request.query_params.get('error_description', error)
+                logger.error(f"Outlook OAuth error: {error_desc}")
+                return f"""
+                <html>
+                    <head>
+                        <style>
+                            body {{
+                                font-family: Arial, sans-serif;
+                                max-width: 600px;
+                                margin: 50px auto;
+                                padding: 20px;
+                                text-align: center;
+                            }}
+                            .error {{
+                                background-color: #f8d7da;
+                                color: #721c24;
+                                padding: 20px;
+                                border-radius: 8px;
+                                margin: 20px 0;
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="error">
+                            <h1>❌ Authentication Failed</h1>
+                            <p><strong>Error:</strong> {error}</p>
+                            <p>{error_desc}</p>
+                        </div>
+                        <a href="/">← Go back</a>
+                    </body>
+                </html>
+                """
+            
+            if not code:
+                raise HTTPException(status_code=400, detail='No authorization code received')
+            
+            # Exchange code for token using cached MSAL app
+            outlook_settings = settings.outlook
+            app = self._get_msal_app()
+            
+            # Build scopes - exclude reserved scopes, MSAL handles them automatically
+            reserved_scopes = {"openid", "offline_access", "profile"}
+            scopes = [
+                f"https://graph.microsoft.com/{scope}"
+                for scope in outlook_settings.scopes
+                if scope not in reserved_scopes
+            ]
+            
+            result = app.acquire_token_by_authorization_code(
+                code=code,
+                scopes=scopes,
+                redirect_uri=outlook_settings.redirect_uri
+            )
+            
+            if "access_token" in result:
+                # Save tokens to file
+                token_file = outlook_settings.token_file
+                Path(token_file).parent.mkdir(parents=True, exist_ok=True)
+                
+                token_data = {
+                    "access_token": result["access_token"],
+                    "refresh_token": result.get("refresh_token"),
+                    "expires_at": (datetime.now() + timedelta(seconds=result.get("expires_in", 3600))).isoformat(),
+                    "id_token": result.get("id_token"),
+                    "scopes": result.get("scope", "").split()
+                }
+                
+                with open(token_file, 'w') as f:
+                    json.dump(token_data, f, indent=2)
+                
+                logger.info(f"✅ Outlook OAuth tokens saved to: {token_file}")
+                
+                # Store in memory
+                self._credentials['outlook'] = {
+                    'method': 'oauth',
+                    'token_file': token_file,
+                    'authenticated_at': datetime.now().isoformat(),
+                    'has_refresh_token': bool(result.get("refresh_token"))
+                }
+                
+                return f"""
+                <html>
+                    <head>
+                        <style>
+                            body {{
+                                font-family: Arial, sans-serif;
+                                max-width: 600px;
+                                margin: 50px auto;
+                                padding: 20px;
+                                text-align: center;
+                            }}
+                            .success {{
+                                background-color: #d4edda;
+                                color: #155724;
+                                padding: 20px;
+                                border-radius: 8px;
+                                margin: 20px 0;
+                            }}
+                            .info {{
+                                background-color: #d1ecf1;
+                                color: #0c5460;
+                                padding: 15px;
+                                border-radius: 8px;
+                                margin: 20px 0;
+                                text-align: left;
+                            }}
+                            code {{
+                                background-color: #f8f9fa;
+                                padding: 2px 6px;
+                                border-radius: 3px;
+                                font-family: monospace;
+                            }}
+                            ul {{
+                                text-align: left;
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="success">
+                            <h1>✅ Outlook Authentication Successful!</h1>
+                            <p>Your Microsoft account has been successfully authenticated.</p>
+                            <p><strong>Tokens have been saved!</strong></p>
+                        </div>
+                        <div class="info">
+                            <h3>📝 Token Details:</h3>
+                            <ul>
+                                <li><strong>Access Token:</strong> Generated ✓</li>
+                                <li><strong>Refresh Token:</strong> {'✓ Saved' if result.get('refresh_token') else '✗ Missing'}</li>
+                                <li><strong>Saved to:</strong> <code>{token_file}</code></li>
+                            </ul>
+                        </div>
+                        <div class="info">
+                            <h3>🚀 Next Steps:</h3>
+                            <ol>
+                                <li>Go back to your terminal</li>
+                                <li>Press <code>Ctrl+C</code> to stop the bot</li>
+                                <li>Restart with: <code>python run.py</code></li>
+                                <li>The bot will now use your saved OAuth tokens!</li>
+                            </ol>
+                        </div>
+                        <a href="/">← Back to Authentication Page</a>
+                    </body>
+                </html>
+                """
+            else:
+                error_desc = result.get('error_description', 'Unknown error')
+                logger.error(f"Token acquisition failed: {error_desc}")
+                return f"""
+                <html>
+                    <head>
+                        <style>
+                            body {{
+                                font-family: Arial, sans-serif;
+                                max-width: 600px;
+                                margin: 50px auto;
+                                padding: 20px;
+                                text-align: center;
+                            }}
+                            .error {{
+                                background-color: #f8d7da;
+                                color: #721c24;
+                                padding: 20px;
+                                border-radius: 8px;
+                                margin: 20px 0;
+                            }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="error">
+                            <h1>❌ Token Acquisition Failed</h1>
+                            <p><strong>Error:</strong> {result.get('error', 'Unknown')}</p>
+                            <p>{error_desc}</p>
+                        </div>
+                        <a href="/">← Go back</a>
+                    </body>
+                </html>
+                """
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in Outlook OAuth callback: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return f"""
+            <html>
+                <head>
+                    <style>
+                        body {{
+                            font-family: Arial, sans-serif;
+                            max-width: 600px;
+                            margin: 50px auto;
+                            padding: 20px;
+                            text-align: center;
+                        }}
+                        .error {{
+                            background-color: #f8d7da;
+                            color: #721c24;
+                            padding: 20px;
+                            border-radius: 8px;
+                            margin: 20px 0;
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="error">
+                        <h1>❌ Authentication Error</h1>
+                        <p><strong>Error:</strong> {str(e)}</p>
+                    </div>
+                    <a href="/">← Go back</a>
                 </body>
             </html>
             """
@@ -677,11 +966,39 @@ class AuthServer:
     
     async def _auth_status(self) -> Dict[str, Any]:
         """Get authentication status."""
-        return {
-            'authenticated_providers': list(self._credentials.keys()),
-            'credentials': self._credentials,
-            'server_time': datetime.now().isoformat()
+        status = {
+            "gmail": self._credentials.get('gmail', {
+                "authenticated": False,
+                "method": None
+            }),
+            "outlook": self._credentials.get('outlook', {
+                "authenticated": False,
+                "method": None
+            }),
+            "server_running": True,
+            "timestamp": datetime.now().isoformat()
         }
+        
+        # Check actual token files
+        gmail_token = Path(settings.gmail.token_file)
+        if gmail_token.exists() and 'gmail' not in self._credentials:
+            status['gmail'] = {
+                "authenticated": True,
+                "method": "oauth",
+                "token_file": str(gmail_token),
+                "from_file": True
+            }
+        
+        outlook_token = Path(settings.outlook.token_file)
+        if outlook_token.exists() and 'outlook' not in self._credentials:
+            status['outlook'] = {
+                "authenticated": True,
+                "method": "oauth",
+                "token_file": str(outlook_token),
+                "from_file": True
+            }
+        
+        return status
     
     async def _health_check(self) -> Dict[str, Any]:
         """Health check endpoint."""

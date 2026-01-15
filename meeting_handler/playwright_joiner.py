@@ -462,23 +462,33 @@ class MeetingJoiner:
         """Ensures microphone and camera are muted using keyboard shortcuts."""
         try:
             logger.info("Attempting to mute microphone and camera...")
+            
+            # On macOS, Google Meet uses Command (Meta), on Windows/Linux it's Control
+            import platform
+            modifier = "Meta" if platform.system() == "Darwin" else "Control"
+            
             # Helper to toggle if needed
-            async def toggle_if_needed(keyword_off: str, shortcut: str, name: str):
+            async def toggle_if_needed(keyword_off: str, shortcut_key: str, name: str):
                 try:
                     # Look for a button that says "Turn off ..." which implies it is currently ON
-                    # The aria-label usually contains the shortcut too, e.g. "Turn off microphone (ctrl + d)"
                     btn = page.locator(f'button[aria-label*="{keyword_off}"]')
                     if await btn.count() > 0 and await btn.first.is_visible():
-                         logger.info(f"{name} appears to be ON. Muting via shortcut {shortcut}...")
-                         await page.keyboard.press(shortcut)
-                         await asyncio.sleep(1)
+                        shortcut = f"{modifier}+{shortcut_key}"
+                        logger.info(f"{name} appears to be ON. Muting via shortcut {shortcut}...")
+                        await page.keyboard.press(shortcut)
+                        await asyncio.sleep(0.5)
+                        # Verify mute worked, if not try clicking
+                        if await btn.count() > 0 and await btn.first.is_visible():
+                            logger.warning(f"{name} still ON after shortcut, trying click...")
+                            await btn.first.click()
+                            await asyncio.sleep(0.5)
                     else:
                         logger.info(f"{name} appears to be already OFF (or button not found).")
                 except Exception as e:
                     logger.warning(f"Error checking {name} state: {e}")
 
-            await toggle_if_needed("Turn off microphone", "Control+d", "Microphone")
-            await toggle_if_needed("Turn off camera", "Control+e", "Camera")
+            await toggle_if_needed("Turn off microphone", "d", "Microphone")
+            await toggle_if_needed("Turn off camera", "e", "Camera")
 
         except Exception as e:
             logger.error(f"Failed to mute audio/video: {e}")
@@ -571,32 +581,7 @@ class MeetingJoiner:
         except Exception as e:
             logger.error(f"Failed to start transcription logic: {e}")
 
-    async def _ensure_mute(self, page: Page) -> None:
-        """Ensures microphone and camera are muted using keyboard shortcuts."""
-        try:
-            logger.info("Attempting to mute microphone and camera...")
-            # Helper to toggle if needed
-            async def toggle_if_needed(keyword_off: str, shortcut: str, name: str):
-                try:
-                    # Look for a button that says "Turn off ..." which implies it is currently ON
-                    # The aria-label usually contains the shortcut too, e.g. "Turn off microphone (ctrl + d)"
-                    btn = page.locator(f'button[aria-label*="{keyword_off}"]')
-                    if await btn.count() > 0 and await btn.first.is_visible():
-                         logger.info(f"{name} appears to be ON. Muting via shortcut {shortcut}...")
-                         await page.keyboard.press(shortcut)
-                         await asyncio.sleep(1)
-                    else:
-                        logger.info(f"{name} appears to be already OFF (or button not found).")
-                except Exception as e:
-                    logger.warning(f"Error checking {name} state: {e}")
-
-            await toggle_if_needed("Turn off microphone", "Control+d", "Microphone")
-            await toggle_if_needed("Turn off camera", "Control+e", "Camera")
-
-        except Exception as e:
-            logger.error(f"Failed to mute audio/video: {e}")
-
-    async def _start_transcription(self, page: Page, meeting: MeetingDetails) -> None:
+    async def _start_transcription_v2(self, page: Page, meeting: MeetingDetails) -> None:
         """Injects Javascript to capture captions."""
         try:
             logger.info("Injecting transcription observer...")

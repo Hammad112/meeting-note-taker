@@ -46,7 +46,10 @@ class EmailServiceFactory:
             services.append(GmailService())
             logger.info("Gmail service initialized")
         
-        # Note: Outlook support has been removed. Only Gmail is available.
+        if provider in (EmailProvider.OUTLOOK, EmailProvider.BOTH):
+            from .outlook import OutlookService
+            services.append(OutlookService())
+            logger.info("Outlook service initialized")
         
         return services
 
@@ -173,7 +176,8 @@ class CombinedEmailService:
         meetings: List[MeetingDetails]
     ) -> List[MeetingDetails]:
         """
-        Remove duplicate meetings based on URL and start time.
+        Remove duplicate meetings based on URL only.
+        Different providers may report different times due to timezone handling.
         
         Args:
             meetings: List of meetings.
@@ -181,15 +185,16 @@ class CombinedEmailService:
         Returns:
             Deduplicated list.
         """
-        seen = set()
+        seen_urls = set()
         unique = []
         
         for meeting in meetings:
-            # Use URL and start time for deduplication
-            key = (meeting.meeting_url, meeting.start_time.isoformat())
-            if key not in seen:
-                seen.add(key)
+            # Use only URL for deduplication (ignore time differences between providers)
+            if meeting.meeting_url not in seen_urls:
+                seen_urls.add(meeting.meeting_url)
                 unique.append(meeting)
+            else:
+                logger.debug(f"Skipping duplicate meeting URL: {meeting.meeting_url}")
         
         return unique
     

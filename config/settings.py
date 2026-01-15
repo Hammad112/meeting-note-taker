@@ -77,7 +77,12 @@ class GmailSettings(BaseSettings):
 
 class OutlookSettings(BaseSettings):
     """Outlook/Microsoft Graph configuration."""
-    model_config = SettingsConfigDict(env_prefix="OUTLOOK_")
+    model_config = SettingsConfigDict(
+        env_prefix="OUTLOOK_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
     
     client_id: str = Field(
         default="",
@@ -92,8 +97,8 @@ class OutlookSettings(BaseSettings):
         description="Azure AD tenant ID (use 'common' for multi-tenant)"
     )
     redirect_uri: str = Field(
-        default="http://localhost:8400/callback",
-        description="OAuth2 redirect URI"
+        default="http://localhost:8888/auth/outlook/callback",
+        description="OAuth2 redirect URI (must match Azure AD config)"
     )
     token_file: str = Field(
         default="credentials/outlook_token.json",
@@ -103,7 +108,8 @@ class OutlookSettings(BaseSettings):
         default=[
             "User.Read",
             "Calendars.Read",
-            "Mail.Read"
+            "Mail.Read",
+            "offline_access"
         ],
         description="Microsoft Graph API scopes"
     )

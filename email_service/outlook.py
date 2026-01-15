@@ -21,8 +21,8 @@ from msal import ConfidentialClientApplication, PublicClientApplication
 
 from .base import EmailServiceBase
 from .url_extractor import extract_meeting_url, clean_html
-from ..models import MeetingDetails, MeetingPlatform, MeetingSource
-from ..config import settings, get_logger
+from models import MeetingDetails, MeetingPlatform, MeetingSource
+from config import settings, get_logger
 
 logger = get_logger("outlook")
 
@@ -86,18 +86,19 @@ class OutlookService(EmailServiceBase):
             True if authentication was successful.
         """
         try:
-            # Try to load existing token
+            # Try to load existing token (checks web OAuth token file first)
             if self._load_token_cache():
                 if self._is_token_valid():
-                    logger.info("Using cached Outlook token")
+                    logger.info("Using cached Outlook token from web OAuth")
                     await self._init_http_client()
                     return True
                 else:
                     # Try to refresh
                     if await self.refresh_token():
+                        logger.info("Refreshed Outlook token successfully")
                         return True
             
-            # Need to do OAuth flow
+            # No valid token found
             if not self._settings.client_id:
                 logger.error(
                     "Outlook client_id not configured. "
@@ -105,14 +106,19 @@ class OutlookService(EmailServiceBase):
                 )
                 return False
             
-            # Use device code flow for easier authentication
-            success = await self._device_code_flow()
-            
-            if success:
-                await self._init_http_client()
-                logger.info("Outlook authentication successful")
-            
-            return success
+            # Prompt user to authenticate via web interface
+            logger.error(
+                "\n" + "=" * 70 + "\n"
+                "OUTLOOK AUTHENTICATION REQUIRED\n"
+                "=" * 70 + "\n"
+                "Please authenticate via the web interface:\n"
+                "1. Open http://localhost:8888 in your browser\n"
+                "2. Click 'Authenticate with Microsoft'\n"
+                "3. Sign in with your Microsoft account\n"
+                "4. Return here after authentication is complete\n"
+                "=" * 70 + "\n"
+            )
+            return False
             
         except Exception as e:
             logger.error(f"Outlook authentication failed: {e}")
