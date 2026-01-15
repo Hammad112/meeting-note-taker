@@ -264,92 +264,92 @@ TEAMS_SELECTORS = {
 # =============================================================================
 
 # JavaScript to observe Teams captions in real-time (supports light meetings)
+# V7: Clean output - only complete sentences, with speaker names
 TEAMS_CAPTION_OBSERVER_JS = """
 (() => {
-    console.log("Teams Transcription Observer V3 Started");
+    console.log("Teams Caption Observer V7 - Clean Output");
     
-    // Track last emitted text per speaker to avoid duplicates
-    const lastEmittedBySpeaker = new Map();
-    let captionCounter = 0;
+    const emittedSet = new Set();
+    let captionCount = 0;
     let currentSpeaker = "Participant";
     
-    // Extended selectors for all Teams meeting types including light meetings
-    const CAPTION_SELECTORS = {
-        // Container selectors (broader matching)
-        container: [
-            '[data-tid="closed-captions-renderer"]',
-            '.ts-captions-container',
-            '[data-tid="captions-renderer"]',
-            '[class*="captions-container"]',
-            '[class*="caption-container"]',
-            '[class*="live-caption"]',
-            '[class*="Captions"]',
-            '[class*="caption-overlay"]',
-            '[aria-label*="caption"]',
-            '[aria-label*="Caption"]',
-            '[aria-live="polite"]'
-        ].join(', '),
-        // Text element selectors
-        text: [
-            '[data-tid="closed-caption-text"]',
-            '.caption-text',
-            '.ts-caption-text',
-            '[class*="caption-text"]',
-            '[class*="captionText"]',
-            '[class*="caption-line"]',
-            '[class*="Captions"] span',
-            '[class*="caption"] span'
-        ].join(', '),
-        // Speaker name selectors (expanded)
-        speaker: [
-            '[data-tid="closed-caption-speaker-name"]',
-            '.caption-speaker-name',
-            '.ts-caption-speaker',
-            '[class*="speaker-name"]',
-            '[class*="speakerName"]',
+    // Track pending (incomplete) captions per element
+    const pendingCaptions = new Map();
+    const COMPLETE_DELAY_MS = 1200; // Wait 1.2s for sentence to complete
+    
+    function emitCaption(speaker, text) {
+        if (!text || text.length < 3) return;
+        
+        // Skip UI text
+        const lower = text.toLowerCase();
+        if (lower.includes('turn on') || lower.includes('live captions') || 
+            lower.includes('settings') || lower.includes('more actions') ||
+            lower.includes('captions are turned on') || lower === 'mute' ||
+            lower === 'leave' || lower === 'share' || lower === 'camera') {
+            return;
+        }
+        
+        // Dedupe
+        const key = text;
+        if (emittedSet.has(key)) return;
+        emittedSet.add(key);
+        
+        captionCount++;
+        console.log("[Caption #" + captionCount + "] " + speaker + ": " + text);
+        
+        if (window.screenAppTranscript) {
+            window.screenAppTranscript({
+                speaker: speaker,
+                text: text,
+                timestamp: new Date().toISOString()
+            });
+        }
+    }
+    
+    function isCompleteSentence(text) {
+        // Check if text ends with sentence-ending punctuation
+        const trimmed = text.trim();
+        return /[.!?]$/.test(trimmed);
+    }
+    
+    function extractSpeakerFromText(text) {
+        // Format 1: "Speaker Name: text"
+        const colonMatch = text.match(/^([A-Za-z][A-Za-z\\s\\.]{1,30}):\\s*(.+)$/);
+        if (colonMatch && colonMatch[2].length > 2) {
+            return { speaker: colonMatch[1].trim(), text: colonMatch[2].trim() };
+        }
+        return null;
+    }
+    
+    function findCurrentSpeaker() {
+        // Method 1: Look for speaker name element near captions
+        const speakerSelectors = [
+            '[class*="speaker" i]',
             '[class*="Speaker"]',
-            '[class*="caption-speaker"]',
-            '[class*="participant-name"]',
-            '[class*="displayName"]'
-        ].join(', ')
-    };
-    
-    // Debounce settings
-    const pendingEmissions = new Map();
-    const DEBOUNCE_MS = 800; // Reduced from 1200 for faster capture
-    
-    function findSpeakerName() {
-        // Method 1: Look for speaker name elements
-        const speakerEls = document.querySelectorAll(CAPTION_SELECTORS.speaker);
-        for (const el of speakerEls) {
-            const name = el.innerText?.trim();
-            if (name && name.length > 0 && name.length < 100 && !name.includes(':')) {
-                return name;
-            }
-        }
+            '[class*="displayName" i]',
+            '[class*="participant-name" i]',
+            '[data-tid*="speaker" i]'
+        ];
         
-        // Method 2: Look in caption rows for speaker pattern
-        const captionRows = document.querySelectorAll('[class*="caption"], [data-tid*="caption"]');
-        for (const row of captionRows) {
-            // Check if row has separate speaker element
-            const children = row.children;
-            for (const child of children) {
-                const text = child.innerText?.trim();
-                // Speaker names are usually short and don't have certain patterns
-                if (text && text.length > 0 && text.length < 50 && 
-                    !text.includes('.') && !text.includes('?') && !text.includes('!') &&
-                    child.className && (child.className.includes('speaker') || child.className.includes('name'))) {
-                    return text;
+        for (const sel of speakerSelectors) {
+            try {
+                const els = document.querySelectorAll(sel);
+                for (const el of els) {
+                    const name = el.innerText?.trim();
+                    if (name && name.length > 1 && name.length < 40 && 
+                        /^[A-Za-z]/.test(name) && !/[.!?]/.test(name)) {
+                        return name;
+                    }
                 }
-            }
+            } catch(e) {}
         }
         
-        // Method 3: Look for participant roster to get current speaker
-        const activeParticipant = document.querySelector('[class*="is-speaking"], [class*="isSpeaking"], [aria-label*="speaking"]');
-        if (activeParticipant) {
-            const name = activeParticipant.innerText?.trim() || 
-                        activeParticipant.getAttribute('aria-label')?.replace(' is speaking', '').trim();
-            if (name && name.length < 100) {
+        // Method 2: Look for "is speaking" indicator
+        const speaking = document.querySelector('[class*="speaking" i], [aria-label*="speaking"]');
+        if (speaking) {
+            const name = speaking.innerText?.trim() || 
+                        speaking.getAttribute('aria-label')?.replace(/is speaking/i, '').trim();
+            if (name && name.length > 1 && name.length < 40) {
                 return name;
             }
         }
@@ -357,164 +357,120 @@ TEAMS_CAPTION_OBSERVER_JS = """
         return null;
     }
     
-    function findAllCaptionText() {
-        let results = [];
+    function processCaption(elementId, text) {
+        if (!text || text.length < 3) return;
         
-        // Method 1: Try known containers first
-        const containers = document.querySelectorAll(CAPTION_SELECTORS.container);
-        
-        containers.forEach(container => {
-            // Look for text elements inside
-            const textElements = container.querySelectorAll(CAPTION_SELECTORS.text);
-            
-            if (textElements.length > 0) {
-                textElements.forEach(el => {
-                    const text = el.innerText?.trim();
-                    if (text && text.length > 0 && text.length < 500) {
-                        results.push({ element: el, container: container, text: text });
-                    }
-                });
-            } else {
-                // Get direct text content
-                const text = container.innerText?.trim();
-                if (text && text.length > 0 && text.length < 500 && 
-                    !text.includes('Turn on') && !text.includes('Start') && !text.includes('Settings')) {
-                    results.push({ element: container, container: container, text: text });
-                }
-            }
-        });
-        
-        // Method 2: Fallback - look for any caption-like elements
-        if (results.length === 0) {
-            const fallbackEls = document.querySelectorAll('[class*="caption"]:not([class*="button"]), [class*="Caption"]:not([class*="Button"])');
-            fallbackEls.forEach(el => {
-                const text = el.innerText?.trim();
-                if (text && text.length > 0 && text.length < 500 && 
-                    !text.includes('Turn') && !text.includes('Start') && !text.includes('Live captions')) {
-                    results.push({ element: el, container: el, text: text });
-                }
-            });
-        }
-        
-        return results;
-    }
-    
-    function emitCaption(text, defaultSpeaker) {
-        if (!text || text.length === 0) return;
-        
-        let speaker = defaultSpeaker;
+        // Try to extract speaker from text format
+        const parsed = extractSpeakerFromText(text);
+        let speaker = currentSpeaker;
         let captionText = text;
         
-        // Try to parse "Speaker: text" or "Speaker - text" format
-        const colonMatch = text.match(/^([A-Za-z][A-Za-z\s]{1,30}):\s*(.+)$/);
-        const dashMatch = text.match(/^([A-Za-z][A-Za-z\s]{1,30})\s*[-–—]\s*(.+)$/);
-        
-        if (colonMatch && colonMatch[2].length > 3) {
-            speaker = colonMatch[1].trim();
-            captionText = colonMatch[2].trim();
-        } else if (dashMatch && dashMatch[2].length > 3) {
-            speaker = dashMatch[1].trim();
-            captionText = dashMatch[2].trim();
+        if (parsed) {
+            speaker = parsed.speaker;
+            captionText = parsed.text;
         }
         
-        // Check if this exact text was just emitted for this speaker
-        const lastForSpeaker = lastEmittedBySpeaker.get(speaker) || "";
-        if (lastForSpeaker === captionText) return;
-        
-        // Calculate what's new (incremental caption)
-        let textToEmit = captionText;
-        if (captionText.startsWith(lastForSpeaker) && lastForSpeaker.length > 0) {
-            textToEmit = captionText.substring(lastForSpeaker.length).trim();
+        // Clear any existing pending timer for this element
+        const pending = pendingCaptions.get(elementId);
+        if (pending) {
+            clearTimeout(pending.timer);
         }
         
-        if (!textToEmit || textToEmit.length === 0) return;
+        // If sentence appears complete, emit after short delay
+        // If not complete, wait longer for more text
+        const isComplete = isCompleteSentence(captionText);
+        const delay = isComplete ? 300 : COMPLETE_DELAY_MS;
         
-        const timestamp = new Date().toISOString();
-        console.log(`[Caption ${++captionCounter}] ${speaker}: ${textToEmit}`);
+        const timer = setTimeout(() => {
+            // Get final text from element
+            const el = document.querySelector('[data-caption-id="' + elementId + '"]');
+            let finalText = captionText;
+            if (el) {
+                finalText = el.innerText?.trim() || captionText;
+                const reparsed = extractSpeakerFromText(finalText);
+                if (reparsed) {
+                    speaker = reparsed.speaker;
+                    finalText = reparsed.text;
+                }
+            }
+            
+            // Only emit if it looks complete (ends with punctuation)
+            if (isCompleteSentence(finalText)) {
+                emitCaption(speaker, finalText);
+            }
+            
+            pendingCaptions.delete(elementId);
+        }, delay);
         
-        // Send to Python immediately
-        if (window.screenAppTranscript) {
-            window.screenAppTranscript({
-                speaker: speaker,
-                text: textToEmit,
-                timestamp: timestamp
-            });
-        }
-        
-        // Update last emitted
-        lastEmittedBySpeaker.set(speaker, captionText);
+        pendingCaptions.set(elementId, { timer, text: captionText, speaker });
     }
     
-    function extractCaptions() {
-        // Try to get current speaker name
-        const detectedSpeaker = findSpeakerName();
+    function scanCaptions() {
+        // Update current speaker
+        const detectedSpeaker = findCurrentSpeaker();
         if (detectedSpeaker) {
             currentSpeaker = detectedSpeaker;
         }
         
-        const captionItems = findAllCaptionText();
+        // Find caption elements
+        const selectors = [
+            '[class*="caption" i]',
+            '[class*="Caption"]',
+            '[class*="subtitle" i]',
+            '[data-tid*="caption" i]',
+            '[aria-live="polite"]'
+        ];
         
-        captionItems.forEach((item, index) => {
-            const { element, text } = item;
-            if (!text) return;
-            
-            // Create unique key for this element
-            const elementKey = element.getAttribute('data-cap-id') || `c${index}`;
-            if (!element.getAttribute('data-cap-id')) {
-                element.setAttribute('data-cap-id', elementKey);
-            }
-            
-            // Get the last known text for this element
-            const pending = pendingEmissions.get(elementKey);
-            
-            // If text hasn't changed, skip
-            if (pending && pending.text === text) return;
-            
-            // Clear existing timer
-            if (pending) {
-                clearTimeout(pending.timer);
-            }
-            
-            // Set new debounce timer
-            const timer = setTimeout(() => {
-                const finalText = element.innerText?.trim();
-                if (finalText && finalText.length > 0) {
-                    emitCaption(finalText, currentSpeaker);
+        let elementIdx = 0;
+        
+        for (const selector of selectors) {
+            try {
+                const elements = document.querySelectorAll(selector);
+                for (const el of elements) {
+                    const text = el.innerText?.trim();
+                    if (!text || text.length < 3 || text.length > 500) continue;
+                    
+                    // Skip if it's a button or menu
+                    if (el.tagName === 'BUTTON' || el.closest('button')) continue;
+                    
+                    // Assign ID to track element
+                    let elId = el.getAttribute('data-caption-id');
+                    if (!elId) {
+                        elId = 'cap_' + (elementIdx++);
+                        el.setAttribute('data-caption-id', elId);
+                    }
+                    
+                    // Process each line
+                    const lines = text.split(/[\\n\\r]+/);
+                    for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i].trim();
+                        if (line.length > 3) {
+                            processCaption(elId + '_' + i, line);
+                        }
+                    }
                 }
-                pendingEmissions.delete(elementKey);
-            }, DEBOUNCE_MS);
-            
-            pendingEmissions.set(elementKey, { timer, text, speaker: currentSpeaker });
-        });
+            } catch(e) {}
+        }
     }
     
-    // Create MutationObserver
+    // Observe changes
     const observer = new MutationObserver(() => {
-        extractCaptions();
+        scanCaptions();
     });
     
-    // Observe document
     observer.observe(document.body, {
         childList: true,
         subtree: true,
-        characterData: true,
-        attributes: true
+        characterData: true
     });
     
-    // Poll frequently
-    setInterval(extractCaptions, 500); // Every 500ms
+    // Poll
+    setInterval(scanCaptions, 500);
     
-    // Initial extraction
-    extractCaptions();
+    // Initial scan
+    setTimeout(scanCaptions, 1000);
     
-    console.log("Teams Transcription Observer V3 Ready");
-    
-    // Debug after delay
-    setTimeout(() => {
-        const found = findAllCaptionText();
-        console.log(`Caption scan: ${found.length} element(s) found`);
-        found.forEach((f, i) => console.log(`  [${i}] "${f.text.substring(0, 50)}..."`));
-    }, 3000);
+    console.log("Teams Caption Observer V7 Ready - Only complete sentences");
 })();
 """
 

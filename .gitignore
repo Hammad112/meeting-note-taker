@@ -10,3 +10,4 @@ __pycache__
 logs/
 credentials/gmail_token.json
 credentials/outlook_token.json
+transcripts/
