@@ -1,0 +1,477 @@
+{
+  "info": {
+    "name": "Meeting Bot API",
+    "_postman_id": "meeting-bot-api-collection",
+    "description": "Complete API collection for Meeting Bot - Automated meeting joining and transcription system",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "1.0.0"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8888",
+      "type": "string",
+      "description": "Base URL for the Meeting Bot API"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string",
+      "description": "API Key for authentication (future use)"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health & Status",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Check if the Meeting Bot server is running and healthy."
+          },
+          "response": [
+            {
+              "name": "Healthy Response",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/health",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["health"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"status\": \"healthy\",\n  \"service\": \"Meeting Bot Authentication Server\",\n  \"version\": \"1.0.0\",\n  \"timestamp\": \"2026-01-15T10:30:00Z\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Authentication Status",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/auth/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "status"]
+            },
+            "description": "Check the current authentication status for all configured email services (Gmail, Outlook, etc.)."
+          },
+          "response": [
+            {
+              "name": "Auth Status - Authenticated",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/auth/status",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["auth", "status"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"gmail\": {\n    \"authenticated\": true,\n    \"method\": \"oauth\",\n    \"token_file\": \"credentials/gmail_token.json\",\n    \"authenticated_at\": \"2026-01-15T10:00:00\",\n    \"has_refresh_token\": true\n  },\n  \"outlook\": {\n    \"authenticated\": false,\n    \"method\": null\n  },\n  \"server_running\": true,\n  \"timestamp\": \"2026-01-15T10:30:00Z\"\n}"
+            },
+            {
+              "name": "Auth Status - Not Authenticated",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/auth/status",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["auth", "status"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"gmail\": {\n    \"authenticated\": false,\n    \"method\": null\n  },\n  \"outlook\": {\n    \"authenticated\": false,\n    \"method\": null\n  },\n  \"server_running\": true,\n  \"timestamp\": \"2026-01-15T10:30:00Z\"\n}"
+            }
+          ]
+        }
+      ],
+      "description": "Endpoints for checking server health and authentication status"
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Start Gmail OAuth",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/gmail/start",
+              "host": ["{{baseUrl}}"],
+              "path": ["auth", "gmail", "start"]
+            },
+            "description": "Initiate Gmail OAuth 2.0 flow. This will redirect to Google's consent screen. **Note**: This endpoint should be opened in a browser, not tested directly in Postman."
+          },
+          "response": [
+            {
+              "name": "Redirect to Google OAuth",
+              "originalRequest": {
+                "method": "GET",
+                "header": [],
+                "url": {
+                  "raw": "{{baseUrl}}/auth/gmail/start",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["auth", "gmail", "start"]
+                }
+              },
+              "status": "Found",
+              "code": 302,
+              "header": [
+                {
+                  "key": "Location",
+                  "value": "https://accounts.google.com/o/oauth2/v2/auth?..."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "description": "OAuth authentication endpoints for Gmail and other services"
+    },
+    {
+      "name": "Manual Meeting Join",
+      "item": [
+        {
+          "name": "Join Google Meet",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bot_name\": \"Meeting Transcriber\",\n  \"meeting_url\": \"https://meet.google.com/abc-defg-hij\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/join",
+              "host": ["{{baseUrl}}"],
+              "path": ["join"]
+            },
+            "description": "Manually join a Google Meet meeting. The bot will open the meeting URL in a browser and attempt to join."
+          },
+          "response": [
+            {
+              "name": "Success - Meeting Joined",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"bot_name\": \"Meeting Transcriber\",\n  \"meeting_url\": \"https://meet.google.com/abc-defg-hij\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/join",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["join"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Successfully joined meeting\",\n  \"meeting_id\": \"abc-defg-hij\",\n  \"platform\": \"google_meet\",\n  \"bot_name\": \"Meeting Transcriber\"\n}"
+            },
+            {
+              "name": "Error - Invalid URL",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"bot_name\": \"Bot\",\n  \"meeting_url\": \"https://invalid-url.com\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/join",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["join"]
+                }
+              },
+              "status": "Bad Request",
+              "code": 400,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"error\": \"Invalid meeting URL\",\n  \"details\": \"URL must be from Google Meet, Zoom, or Teams\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Join Zoom Meeting",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bot_name\": \"Zoom Transcriber\",\n  \"meeting_url\": \"https://zoom.us/j/1234567890?pwd=abc123xyz\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/join",
+              "host": ["{{baseUrl}}"],
+              "path": ["join"]
+            },
+            "description": "Manually join a Zoom meeting. Supports both web client and app URLs."
+          },
+          "response": [
+            {
+              "name": "Success - Zoom Joined",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"bot_name\": \"Zoom Transcriber\",\n  \"meeting_url\": \"https://zoom.us/j/1234567890?pwd=abc123xyz\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/join",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["join"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Successfully joined meeting\",\n  \"meeting_id\": \"1234567890\",\n  \"platform\": \"zoom\",\n  \"bot_name\": \"Zoom Transcriber\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Join Microsoft Teams",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bot_name\": \"Teams Recorder\",\n  \"meeting_url\": \"https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc123@thread.v2/0?context=%7b%22Tid%22%3a%22xyz%22%7d\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/join",
+              "host": ["{{baseUrl}}"],
+              "path": ["join"]
+            },
+            "description": "Manually join a Microsoft Teams meeting."
+          },
+          "response": [
+            {
+              "name": "Success - Teams Joined",
+              "originalRequest": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"bot_name\": \"Teams Recorder\",\n  \"meeting_url\": \"https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc123@thread.v2/0?context=%7b%22Tid%22%3a%22xyz%22%7d\"\n}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/join",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["join"]
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"message\": \"Successfully joined meeting\",\n  \"meeting_id\": \"19:meeting_abc123@thread.v2\",\n  \"platform\": \"teams\",\n  \"bot_name\": \"Teams Recorder\"\n}"
+            }
+          ]
+        }
+      ],
+      "description": "Endpoints for manually joining meetings without email polling"
+    },
+    {
+      "name": "Dashboard",
+      "item": [
+        {
+          "name": "Get Dashboard",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/html",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/",
+              "host": ["{{baseUrl}}"],
+              "path": [""]
+            },
+            "description": "Get the web dashboard (HTML). This should be opened in a browser for best experience."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Join Form",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/html",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/join",
+              "host": ["{{baseUrl}}"],
+              "path": ["join"]
+            },
+            "description": "Get the manual join form (HTML). This should be opened in a browser."
+          },
+          "response": []
+        }
+      ],
+      "description": "Web UI endpoints (HTML responses)"
+    }
+  ],
+  "auth": {
+    "type": "noauth"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Pre-request script (optional)",
+          "console.log('Making request to:', pm.request.url.toString());"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Global test script",
+          "pm.test('Response time is less than 5s', function () {",
+          "    pm.expect(pm.response.responseTime).to.be.below(5000);",
+          "});",
+          "",
+          "pm.test('Status code is successful', function () {",
+          "    pm.expect(pm.response.code).to.be.oneOf([200, 201, 302]);",
+          "});"
+        ]
+      }
+    }
+  ]
+}
