@@ -10,8 +10,9 @@ from models import MeetingPlatform
 # Regex patterns for meeting URLs
 MEETING_URL_PATTERNS = {
     MeetingPlatform.TEAMS: [
-        # Microsoft Teams meeting link
+        # Microsoft Teams meeting links (various formats)
         r'https://teams\.microsoft\.com/l/meetup-join/[^\s<>"\']+',
+        r'https://teams\.microsoft\.com/meet/[^\s<>"\']+',
         r'https://teams\.live\.com/meet/[^\s<>"\']+',
     ],
     MeetingPlatform.ZOOM: [

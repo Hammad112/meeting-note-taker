@@ -937,7 +937,8 @@ class AuthServer:
                 raise HTTPException(status_code=400, detail='Meeting URL is required')
             
             # Validate URL format
-            if not any(domain in meeting_url.lower() for domain in ['meet.google.com', 'zoom.us', 'teams.microsoft.com']):
+            # Note: Teams has multiple domains: teams.microsoft.com (work/school) and teams.live.com (personal)
+            if not any(domain in meeting_url.lower() for domain in ['meet.google.com', 'zoom.us', 'teams.microsoft.com', 'teams.live.com']):
                 raise HTTPException(status_code=400, detail='Invalid meeting URL. Supported platforms: Google Meet, Zoom, Teams')
             
             # Check if meeting bot is available

@@ -229,6 +229,51 @@ class AuthServerSettings(BaseSettings):
     )
 
 
+class BotSettings(BaseSettings):
+    """Bot behavior configuration."""
+    model_config = SettingsConfigDict(env_prefix="BOT_")
+    
+    # Display names for the bot in meetings
+    default_bot_name: str = Field(
+        default="Meeting Bot",
+        description="Default bot display name"
+    )
+    teams_bot_name: str = Field(
+        default="Meeting Transcriber",
+        description="Bot display name for Teams meetings"
+    )
+    google_meet_bot_name: str = Field(
+        default="Meeting Transcriber",
+        description="Bot display name for Google Meet"
+    )
+    zoom_bot_name: str = Field(
+        default="Meeting Transcriber",
+        description="Bot display name for Zoom meetings"
+    )
+    
+    # Caption/transcription settings
+    teams_caption_language: str = Field(
+        default="en",
+        description="Default caption language for Teams (e.g., 'en', 'es', 'fr')"
+    )
+    
+    # Timeouts
+    lobby_timeout_seconds: int = Field(
+        default=600,
+        description="Maximum time to wait in meeting lobby (seconds)"
+    )
+    
+    # Behavior flags
+    auto_enable_captions: bool = Field(
+        default=True,
+        description="Automatically enable captions when joining meetings"
+    )
+    auto_mute_on_join: bool = Field(
+        default=True,
+        description="Automatically mute microphone and camera when joining"
+    )
+
+
 class Settings(BaseSettings):
     """Main application settings."""
     model_config = SettingsConfigDict(
@@ -252,6 +297,7 @@ class Settings(BaseSettings):
     scheduler: SchedulerSettings = Field(default_factory=SchedulerSettings)
     backend: BackendSettings = Field(default_factory=BackendSettings)
     auth_server: AuthServerSettings = Field(default_factory=AuthServerSettings)
+    bot: BotSettings = Field(default_factory=BotSettings)
     
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")

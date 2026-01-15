@@ -48,13 +48,31 @@ class TranscriptionService:
                 logger.info(f"Stopped transcription: {self.current_file}")
                 self.current_file = None
 
-    def append_transcript(self, speaker: str, text: str) -> None:
-        """Appends a new line of transcript."""
+    def append_transcript(self, speaker: str, text: str, timestamp: str = None) -> None:
+        """
+        Appends a new line of transcript.
+        
+        Args:
+            speaker: Name of the speaker
+            text: The transcribed text
+            timestamp: Optional ISO timestamp from caption capture. If not provided, uses current time.
+        """
         if not self._file_handle:
             return
 
+        # Use provided timestamp or current time
+        if timestamp:
+            try:
+                # Parse ISO timestamp and format as local time
+                from datetime import timezone
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                time_str = dt.astimezone().strftime("%H:%M:%S")
+            except:
+                time_str = datetime.now().strftime("%H:%M:%S")
+        else:
+            time_str = datetime.now().strftime("%H:%M:%S")
+        
         # Simple format: [Time] Speaker: Text
-        time_str = datetime.now().strftime("%H:%M:%S")
         line = f"[{time_str}] {speaker}: {text}"
         self._write_line(line)
 

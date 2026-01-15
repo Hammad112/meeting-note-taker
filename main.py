@@ -249,11 +249,12 @@ class MeetingBot:
             
             # Detect platform from URL
             platform = None
-            if 'meet.google.com' in meeting_url.lower():
+            meeting_url_lower = meeting_url.lower()
+            if 'meet.google.com' in meeting_url_lower:
                 platform = MeetingPlatform.GOOGLE_MEET
-            elif 'zoom.us' in meeting_url.lower():
+            elif 'zoom.us' in meeting_url_lower:
                 platform = MeetingPlatform.ZOOM
-            elif 'teams.microsoft.com' in meeting_url.lower():
+            elif 'teams.microsoft.com' in meeting_url_lower or 'teams.live.com' in meeting_url_lower:
                 platform = MeetingPlatform.TEAMS
             else:
                 return {'success': False, 'error': 'Unsupported meeting platform'}

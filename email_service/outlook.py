@@ -74,6 +74,8 @@ class OutlookService(EmailServiceBase):
         self._access_token: Optional[str] = None
         self._token_expires_at: Optional[datetime] = None
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._auth_message_shown: bool = False  # Prevent auth message spam
+        self._refresh_error_shown: bool = False  # Prevent refresh error spam
         
         # Ensure credentials directory exists
         Path(self._settings.token_file).parent.mkdir(parents=True, exist_ok=True)
@@ -100,24 +102,28 @@ class OutlookService(EmailServiceBase):
             
             # No valid token found
             if not self._settings.client_id:
-                logger.error(
-                    "Outlook client_id not configured. "
-                    "Please set OUTLOOK_CLIENT_ID in .env file."
-                )
+                if not self._auth_message_shown:
+                    logger.error(
+                        "Outlook client_id not configured. "
+                        "Please set OUTLOOK_CLIENT_ID in .env file."
+                    )
+                    self._auth_message_shown = True
                 return False
             
-            # Prompt user to authenticate via web interface
-            logger.error(
-                "\n" + "=" * 70 + "\n"
-                "OUTLOOK AUTHENTICATION REQUIRED\n"
-                "=" * 70 + "\n"
-                "Please authenticate via the web interface:\n"
-                "1. Open http://localhost:8888 in your browser\n"
-                "2. Click 'Authenticate with Microsoft'\n"
-                "3. Sign in with your Microsoft account\n"
-                "4. Return here after authentication is complete\n"
-                "=" * 70 + "\n"
-            )
+            # Prompt user to authenticate via web interface (only once)
+            if not self._auth_message_shown:
+                logger.error(
+                    "\n" + "=" * 70 + "\n"
+                    "OUTLOOK AUTHENTICATION REQUIRED\n"
+                    "=" * 70 + "\n"
+                    "Please authenticate via the web interface:\n"
+                    "1. Open http://localhost:8888 in your browser\n"
+                    "2. Click 'Authenticate with Microsoft'\n"
+                    "3. Sign in with your Microsoft account\n"
+                    "4. Return here after authentication is complete\n"
+                    "=" * 70 + "\n"
+                )
+                self._auth_message_shown = True
             return False
             
         except Exception as e:
@@ -139,10 +145,20 @@ class OutlookService(EmailServiceBase):
                 authority=authority
             )
             
+            # Build scopes correctly
+            graph_scopes = ["Calendars.Read", "Mail.Read", "User.Read"]
+            standalone_scopes = ["offline_access", "openid", "profile"]
+            scopes = []
+            for scope in self._settings.scopes:
+                if scope in standalone_scopes:
+                    scopes.append(scope)
+                elif scope in graph_scopes or not scope.startswith("http"):
+                    scopes.append(f"https://graph.microsoft.com/{scope}")
+                else:
+                    scopes.append(scope)
+            
             # Initiate device code flow
-            flow = app.initiate_device_flow(
-                scopes=[f"https://graph.microsoft.com/{scope}" for scope in self._settings.scopes]
-            )
+            flow = app.initiate_device_flow(scopes=scopes)
             
             if "user_code" not in flow:
                 logger.error(f"Failed to initiate device flow: {flow}")
@@ -200,7 +216,17 @@ class OutlookService(EmailServiceBase):
                 authority=authority
             )
             
-            scopes = [f"https://graph.microsoft.com/{scope}" for scope in self._settings.scopes]
+            # Build scopes correctly
+            graph_scopes = ["Calendars.Read", "Mail.Read", "User.Read"]
+            standalone_scopes = ["offline_access", "openid", "profile"]
+            scopes = []
+            for scope in self._settings.scopes:
+                if scope in standalone_scopes:
+                    scopes.append(scope)
+                elif scope in graph_scopes or not scope.startswith("http"):
+                    scopes.append(f"https://graph.microsoft.com/{scope}")
+                else:
+                    scopes.append(scope)
             
             # Build authorization URL
             auth_url = app.get_authorization_request_url(
@@ -291,7 +317,17 @@ class OutlookService(EmailServiceBase):
                     authority=authority
                 )
             
-            scopes = [f"https://graph.microsoft.com/{scope}" for scope in self._settings.scopes]
+            # Build scopes - some need Graph prefix, some don't
+            graph_scopes = ["Calendars.Read", "Mail.Read", "User.Read"]
+            standalone_scopes = ["offline_access", "openid", "profile"]
+            scopes = []
+            for scope in self._settings.scopes:
+                if scope in standalone_scopes:
+                    scopes.append(scope)
+                elif scope in graph_scopes or not scope.startswith("http"):
+                    scopes.append(f"https://graph.microsoft.com/{scope}")
+                else:
+                    scopes.append(scope)
             
             # Try to acquire token silently using refresh token
             accounts = app.get_accounts()
@@ -317,11 +353,15 @@ class OutlookService(EmailServiceBase):
                 logger.info("Outlook token refreshed successfully")
                 return True
             else:
-                logger.warning(f"Token refresh failed: {result.get('error_description', 'Unknown error')}")
+                if not self._refresh_error_shown:
+                    logger.warning(f"Token refresh failed: {result.get('error_description', 'Unknown error')}")
+                    self._refresh_error_shown = True
                 return False
                 
         except Exception as e:
-            logger.error(f"Failed to refresh Outlook token: {e}")
+            if not self._refresh_error_shown:
+                logger.error(f"Failed to refresh Outlook token: {e}")
+                self._refresh_error_shown = True
             return False
     
     def is_authenticated(self) -> bool:
