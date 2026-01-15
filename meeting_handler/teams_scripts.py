@@ -264,38 +264,82 @@ TEAMS_SELECTORS = {
 # =============================================================================
 
 # JavaScript to observe Teams captions in real-time (supports light meetings)
-# V7: Clean output - only complete sentences, with speaker names
+# V10: Uses Teams' actual DOM structure - data-tid="author" and data-tid="closed-caption-text"
 TEAMS_CAPTION_OBSERVER_JS = """
 (() => {
-    console.log("Teams Caption Observer V7 - Clean Output");
+    console.log("Teams Caption Observer V10 - Using DOM Structure");
     
     const emittedSet = new Set();
     let captionCount = 0;
     let currentSpeaker = "Participant";
+    let lastSpeakerChangeTime = Date.now();
     
-    // Track pending (incomplete) captions per element
+    // Track pending captions
     const pendingCaptions = new Map();
-    const COMPLETE_DELAY_MS = 1200; // Wait 1.2s for sentence to complete
+    const COMPLETE_DELAY_MS = 1000;
+    const SPEAKER_TIMEOUT_MS = 5000; // Reset to "Participant" if no name seen for 5s
+    
+    // Known speaker names (learned during session)
+    const knownSpeakers = new Set();
+    
+    function isPersonName(text) {
+        // STRICT name detection - must look like "First Last" or "First"
+        if (!text) return false;
+        
+        const trimmed = text.trim();
+        
+        // Length: 2-30 chars (names are short)
+        if (trimmed.length < 2 || trimmed.length > 30) return false;
+        
+        // Max 3 words (First Middle Last)
+        const words = trimmed.split(/\\s+/);
+        if (words.length > 3) return false;
+        
+        // Each word must start with capital, be 2-15 chars, only letters/hyphens
+        for (const word of words) {
+            if (!/^[A-Z][a-z\\-\\']{1,14}$/.test(word)) return false;
+        }
+        
+        // Must NOT contain common speech words
+        const lower = trimmed.toLowerCase();
+        const speechWords = [
+            'yes', 'no', 'ok', 'okay', 'sure', 'so', 'can', 'you', 'please',
+            'the', 'and', 'is', 'are', 'was', 'were', 'have', 'has', 'had',
+            'will', 'would', 'could', 'should', 'may', 'might', 'must',
+            'what', 'why', 'how', 'when', 'where', 'who', 'which',
+            'this', 'that', 'these', 'those', 'here', 'there',
+            'not', 'but', 'for', 'with', 'from', 'about', 'into',
+            'your', 'my', 'his', 'her', 'its', 'our', 'their',
+            'just', 'like', 'know', 'think', 'want', 'need', 'get',
+            'let', 'see', 'say', 'tell', 'ask', 'make', 'take',
+            'mute', 'unmute', 'leave', 'share', 'camera', 'call',
+            'meeting', 'captions', 'joined', 'left', 'unknown'
+        ];
+        
+        for (const word of words) {
+            if (speechWords.includes(word.toLowerCase())) return false;
+        }
+        
+        return true;
+    }
     
     function emitCaption(speaker, text) {
         if (!text || text.length < 3) return;
         
-        // Skip UI text
+        // Skip UI/system text
         const lower = text.toLowerCase();
         if (lower.includes('turn on') || lower.includes('live captions') || 
-            lower.includes('settings') || lower.includes('more actions') ||
-            lower.includes('captions are turned on') || lower === 'mute' ||
-            lower === 'leave' || lower === 'share' || lower === 'camera') {
+            lower.includes('captions are turned on') || lower.includes('joined the') ||
+            lower.includes('left the') || lower.includes('unknown user')) {
             return;
         }
         
         // Dedupe
-        const key = text;
-        if (emittedSet.has(key)) return;
-        emittedSet.add(key);
+        if (emittedSet.has(text)) return;
+        emittedSet.add(text);
         
         captionCount++;
-        console.log("[Caption #" + captionCount + "] " + speaker + ": " + text);
+        console.log("[#" + captionCount + "] " + speaker + ": " + text);
         
         if (window.screenAppTranscript) {
             window.screenAppTranscript({
@@ -307,153 +351,198 @@ TEAMS_CAPTION_OBSERVER_JS = """
     }
     
     function isCompleteSentence(text) {
-        // Check if text ends with sentence-ending punctuation
-        const trimmed = text.trim();
-        return /[.!?]$/.test(trimmed);
+        return /[.!?]$/.test(text.trim());
     }
     
-    function extractSpeakerFromText(text) {
-        // Format 1: "Speaker Name: text"
-        const colonMatch = text.match(/^([A-Za-z][A-Za-z\\s\\.]{1,30}):\\s*(.+)$/);
-        if (colonMatch && colonMatch[2].length > 2) {
-            return { speaker: colonMatch[1].trim(), text: colonMatch[2].trim() };
-        }
-        return null;
-    }
-    
-    function findCurrentSpeaker() {
-        // Method 1: Look for speaker name element near captions
-        const speakerSelectors = [
-            '[class*="speaker" i]',
-            '[class*="Speaker"]',
-            '[class*="displayName" i]',
-            '[class*="participant-name" i]',
-            '[data-tid*="speaker" i]'
-        ];
+    function processLine(line, elementId, lineIndex, allLines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.length < 2) return;
         
-        for (const sel of speakerSelectors) {
-            try {
-                const els = document.querySelectorAll(sel);
-                for (const el of els) {
-                    const name = el.innerText?.trim();
-                    if (name && name.length > 1 && name.length < 40 && 
-                        /^[A-Za-z]/.test(name) && !/[.!?]/.test(name)) {
-                        return name;
-                    }
+        // Check if this line is ONLY a person's name
+        if (isPersonName(trimmed)) {
+            currentSpeaker = trimmed;
+            knownSpeakers.add(trimmed);
+            lastSpeakerChangeTime = Date.now();
+            console.log("[Speaker detected] " + trimmed);
+            return; // Don't emit name as caption
+        }
+        
+        // Check for "Known Name: text" format at START of line
+        for (const name of knownSpeakers) {
+            if (trimmed.startsWith(name + ':') || trimmed.startsWith(name + ' :')) {
+                currentSpeaker = name;
+                lastSpeakerChangeTime = Date.now();
+                const colonIdx = trimmed.indexOf(':');
+                const captionText = trimmed.substring(colonIdx + 1).trim();
+                if (captionText.length > 2) {
+                    scheduleEmit(elementId, name, captionText);
                 }
-            } catch(e) {}
-        }
-        
-        // Method 2: Look for "is speaking" indicator
-        const speaking = document.querySelector('[class*="speaking" i], [aria-label*="speaking"]');
-        if (speaking) {
-            const name = speaking.innerText?.trim() || 
-                        speaking.getAttribute('aria-label')?.replace(/is speaking/i, '').trim();
-            if (name && name.length > 1 && name.length < 40) {
-                return name;
+                return;
             }
         }
         
-        return null;
-    }
-    
-    function processCaption(elementId, text) {
-        if (!text || text.length < 3) return;
-        
-        // Try to extract speaker from text format
-        const parsed = extractSpeakerFromText(text);
-        let speaker = currentSpeaker;
-        let captionText = text;
-        
-        if (parsed) {
-            speaker = parsed.speaker;
-            captionText = parsed.text;
+        // NEW: Check if previous line was a name (Teams shows name on line above caption)
+        if (lineIndex > 0) {
+            const prevLine = allLines[lineIndex - 1]?.trim();
+            if (prevLine && isPersonName(prevLine)) {
+                currentSpeaker = prevLine;
+                knownSpeakers.add(prevLine);
+                lastSpeakerChangeTime = Date.now();
+                console.log("[Speaker from prev line] " + prevLine);
+            }
         }
         
-        // Clear any existing pending timer for this element
+        // NEW: Check if next line is a name (sometimes name comes after)
+        if (lineIndex < allLines.length - 1) {
+            const nextLine = allLines[lineIndex + 1]?.trim();
+            if (nextLine && isPersonName(nextLine)) {
+                // This line is caption, next is name - use next as speaker for future
+                knownSpeakers.add(nextLine);
+            }
+        }
+        
+        // Regular caption - use current speaker
+        scheduleEmit(elementId, currentSpeaker, trimmed);
+    }
+    
+    function scheduleEmit(elementId, speaker, text) {
         const pending = pendingCaptions.get(elementId);
         if (pending) {
             clearTimeout(pending.timer);
         }
         
-        // If sentence appears complete, emit after short delay
-        // If not complete, wait longer for more text
-        const isComplete = isCompleteSentence(captionText);
-        const delay = isComplete ? 300 : COMPLETE_DELAY_MS;
+        // If no speaker name detected recently, use "Participant"
+        let finalSpeaker = speaker;
+        const timeSinceLastSpeaker = Date.now() - lastSpeakerChangeTime;
+        if (timeSinceLastSpeaker > SPEAKER_TIMEOUT_MS && speaker !== "Participant") {
+            // Reset to Participant if we haven't seen a name in a while
+            finalSpeaker = "Participant";
+        }
+        
+        const isComplete = isCompleteSentence(text);
+        const delay = isComplete ? 200 : COMPLETE_DELAY_MS;
         
         const timer = setTimeout(() => {
-            // Get final text from element
-            const el = document.querySelector('[data-caption-id="' + elementId + '"]');
-            let finalText = captionText;
-            if (el) {
-                finalText = el.innerText?.trim() || captionText;
-                const reparsed = extractSpeakerFromText(finalText);
-                if (reparsed) {
-                    speaker = reparsed.speaker;
-                    finalText = reparsed.text;
-                }
+            if (isCompleteSentence(text)) {
+                emitCaption(finalSpeaker, text);
             }
-            
-            // Only emit if it looks complete (ends with punctuation)
-            if (isCompleteSentence(finalText)) {
-                emitCaption(speaker, finalText);
-            }
-            
             pendingCaptions.delete(elementId);
         }, delay);
         
-        pendingCaptions.set(elementId, { timer, text: captionText, speaker });
+        pendingCaptions.set(elementId, { timer, text, speaker: finalSpeaker });
+    }
+    
+    function findSpeakerNearElement(el) {
+        // Look for speaker name in sibling or parent elements
+        // Teams often puts name in a separate element near the caption
+        
+        // Check siblings
+        const parent = el.parentElement;
+        if (parent) {
+            const siblings = Array.from(parent.children);
+            for (const sibling of siblings) {
+                if (sibling === el) continue;
+                const text = sibling.innerText?.trim();
+                if (text && isPersonName(text)) {
+                    return text;
+                }
+            }
+        }
+        
+        // Check parent's text (might contain name + caption)
+        if (parent) {
+            const parentText = parent.innerText?.trim();
+            if (parentText) {
+                const lines = parentText.split(/[\\n\\r]+/);
+                for (const line of lines) {
+                    if (isPersonName(line.trim())) {
+                        return line.trim();
+                    }
+                }
+            }
+        }
+        
+        return null;
     }
     
     function scanCaptions() {
-        // Update current speaker
-        const detectedSpeaker = findCurrentSpeaker();
-        if (detectedSpeaker) {
-            currentSpeaker = detectedSpeaker;
+        // PRIMARY METHOD: Use Teams' actual DOM structure
+        // Find all caption text elements with data-tid="closed-caption-text"
+        const captionTextElements = document.querySelectorAll('[data-tid="closed-caption-text"]');
+        
+        for (const captionEl of captionTextElements) {
+            try {
+                // Find the parent ChatMessageCompact container
+                const container = captionEl.closest('.fui-ChatMessageCompact');
+                if (!container) continue;
+                
+                // Find the author/speaker name in the same container
+                const authorEl = container.querySelector('[data-tid="author"]');
+                let speaker = "Participant";
+                
+                if (authorEl) {
+                    const authorText = authorEl.innerText?.trim();
+                    if (authorText && authorText.length > 0 && authorText.length < 50) {
+                        speaker = authorText;
+                        knownSpeakers.add(authorText);
+                        currentSpeaker = authorText;
+                        lastSpeakerChangeTime = Date.now();
+                    }
+                }
+                
+                // Get the caption text
+                const captionText = captionEl.innerText?.trim();
+                if (!captionText || captionText.length < 2) continue;
+                
+                // Create unique ID for this caption element
+                let captionId = captionEl.getAttribute('data-caption-id');
+                if (!captionId) {
+                    captionId = 'cap_' + Date.now() + '_' + Math.random();
+                    captionEl.setAttribute('data-caption-id', captionId);
+                }
+                
+                // Process this caption
+                scheduleEmit(captionId, speaker, captionText);
+                
+            } catch(e) {
+                console.error("Error processing caption:", e);
+            }
         }
         
-        // Find caption elements
-        const selectors = [
+        // FALLBACK: Also check old selectors for compatibility
+        const fallbackSelectors = [
             '[class*="caption" i]',
             '[class*="Caption"]',
-            '[class*="subtitle" i]',
             '[data-tid*="caption" i]',
             '[aria-live="polite"]'
         ];
         
-        let elementIdx = 0;
+        let idx = 0;
         
-        for (const selector of selectors) {
+        for (const selector of fallbackSelectors) {
             try {
                 const elements = document.querySelectorAll(selector);
                 for (const el of elements) {
-                    const text = el.innerText?.trim();
-                    if (!text || text.length < 3 || text.length > 500) continue;
-                    
-                    // Skip if it's a button or menu
+                    // Skip if already processed as closed-caption-text
+                    if (el.hasAttribute('data-tid') && el.getAttribute('data-tid') === 'closed-caption-text') {
+                        continue;
+                    }
                     if (el.tagName === 'BUTTON' || el.closest('button')) continue;
                     
-                    // Assign ID to track element
-                    let elId = el.getAttribute('data-caption-id');
-                    if (!elId) {
-                        elId = 'cap_' + (elementIdx++);
-                        el.setAttribute('data-caption-id', elId);
-                    }
+                    const text = el.innerText?.trim();
+                    if (!text || text.length < 2 || text.length > 1000) continue;
                     
-                    // Process each line
                     const lines = text.split(/[\\n\\r]+/);
                     for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i].trim();
-                        if (line.length > 3) {
-                            processCaption(elId + '_' + i, line);
-                        }
+                        processLine(lines[i], 'fallback_' + idx + '_' + i, i, lines);
                     }
+                    idx++;
                 }
             } catch(e) {}
         }
     }
     
-    // Observe changes
+    // Observe DOM
     const observer = new MutationObserver(() => {
         scanCaptions();
     });
@@ -465,12 +554,12 @@ TEAMS_CAPTION_OBSERVER_JS = """
     });
     
     // Poll
-    setInterval(scanCaptions, 500);
+    setInterval(scanCaptions, 400);
     
-    // Initial scan
-    setTimeout(scanCaptions, 1000);
+    // Initial
+    setTimeout(scanCaptions, 500);
     
-    console.log("Teams Caption Observer V7 Ready - Only complete sentences");
+    console.log("Teams Caption Observer V10 Ready - Using data-tid selectors");
 })();
 """
 
