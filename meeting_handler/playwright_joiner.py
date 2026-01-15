@@ -312,6 +312,11 @@ class MeetingJoiner:
                          logger.error("Auto-login failed or no credentials. Aborting.")
                          return
 
+            # --- 2.5 Ensure Muted in Lobby ---
+            # Click buttons to mute if they are active
+            logger.info("Ensuring microphone and camera are muted in lobby...")
+            await self._ensure_mute(page)
+
             # --- 3. Click Join Action (Ask to Join / Join Now) ---
             join_clicked = False
             clicked_btn_name = ""

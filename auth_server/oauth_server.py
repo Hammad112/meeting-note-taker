@@ -6,12 +6,18 @@ Provides web endpoints for users to authenticate with their email providers.
 import asyncio
 import json
 import os
-from pathlib import Path
-from typing import Optional, Dict, Any
-from datetime import datetime
 import threading
+from pathlib import Path
+from typing import Optional, Dict, Any, List
+from datetime import datetime
 
-from aiohttp import web
+import uvicorn
+from fastapi import FastAPI, Request, HTTPException, Form, BackgroundTasks
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 
@@ -19,10 +25,14 @@ from config import settings, get_logger
 
 logger = get_logger("auth_server")
 
+# Pydantic models for request bodies
+class ManualJoinRequest(BaseModel):
+    bot_name: str
+    meeting_url: str
 
 class AuthServer:
     """
-    Web server for OAuth authentication flows.
+    Web server for OAuth authentication flows using FastAPI.
     Provides endpoints for users to authenticate without automatic redirects.
     """
     
@@ -37,59 +47,100 @@ class AuthServer:
         """
         self.host = host
         self.port = port
-        self.app = web.Application()
-        self.runner: Optional[web.AppRunner] = None
-        self.site: Optional[web.TCPSite] = None
         self.meeting_bot = meeting_bot
         
         # Store pending OAuth flows
         self._flows: Dict[str, Flow] = {}
         self._credentials: Dict[str, Any] = {}
         
+        # Initialize FastAPI app
+        self.app = FastAPI(
+            title="Meeting Bot Authentication Server",
+            description="API for Meeting Bot authentication and manual control",
+            version="1.0.0"
+        )
+        
+        self.server = None
+        self._server_task = None
+        
+        # Setup middleware
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        
         # Setup routes
         self._setup_routes()
     
     def _setup_routes(self) -> None:
         """Setup web routes."""
-        self.app.router.add_get('/', self._index_handler)
-        self.app.router.add_get('/auth/gmail/start', self._gmail_auth_start)
-        self.app.router.add_get('/auth/gmail/callback', self._gmail_auth_callback)
-        # Credentials endpoint removed - Gmail API only supports OAuth
-        self.app.router.add_get('/auth/status', self._auth_status)
-        self.app.router.add_get('/health', self._health_check)
-        # Manual join routes
-        self.app.router.add_get('/join', self._manual_join_page)
-        self.app.router.add_post('/join', self._manual_join_handler)
-    
+        
+        @self.app.get("/", response_class=HTMLResponse, tags=["UI"])
+        async def index():
+            return self._index_handler()
+            
+        @self.app.get("/auth/gmail/start", tags=["Authentication"])
+        async def gmail_auth_start():
+            return await self._gmail_auth_start()
+            
+        @self.app.get("/auth/gmail/callback", response_class=HTMLResponse, tags=["Authentication"])
+        async def gmail_auth_callback(request: Request):
+            return await self._gmail_auth_callback(request)
+            
+        @self.app.get("/auth/status", tags=["Status"])
+        async def auth_status():
+            return await self._auth_status()
+            
+        @self.app.get("/health", tags=["Status"])
+        async def health_check():
+            return await self._health_check()
+            
+        @self.app.get("/join", response_class=HTMLResponse, tags=["Manual Join"])
+        async def manual_join_page():
+            return self._manual_join_page()
+            
+        @self.app.post("/join", tags=["Manual Join"])
+        async def manual_join(request: ManualJoinRequest):
+            return await self._manual_join_handler(request)
+
     async def start(self) -> None:
         """Start the authentication server."""
-        if self.runner:
+        if self.server:
             logger.warning("Auth server is already running")
             return
+            
+        config = uvicorn.Config(
+            app=self.app,
+            host=self.host,
+            port=self.port,
+            log_level="info",
+            access_log=False
+        )
+        self.server = uvicorn.Server(config)
         
-        self.runner = web.AppRunner(self.app)
-        await self.runner.setup()
-        self.site = web.TCPSite(self.runner, self.host, self.port)
-        await self.site.start()
+        # Run in background task
+        self._server_task = asyncio.create_task(self.server.serve())
         
         logger.info(f"Auth server started at http://{self.host}:{self.port}")
+        logger.info(f"Swagger UI available at http://{self.host}:{self.port}/docs")
         logger.info(f"Gmail OAuth: http://{self.host}:{self.port}/auth/gmail/start")
     
     async def stop(self) -> None:
         """Stop the authentication server."""
-        if self.site:
-            await self.site.stop()
-            self.site = None
-        
-        if self.runner:
-            await self.runner.cleanup()
-            self.runner = None
-        
+        if self.server:
+            self.server.should_exit = True
+            if self._server_task:
+                await self._server_task
+            self.server = None
+            self._server_task = None
         logger.info("Auth server stopped")
     
-    async def _index_handler(self, request: web.Request) -> web.Response:
+    def _index_handler(self) -> str:
         """Handle index page."""
-        html = """
+        return """
         <!DOCTYPE html>
         <html>
         <head>
@@ -192,6 +243,12 @@ class AuthServer:
                     <button onclick="checkStatus()">Check Status</button>
                     <div id="statusDisplay"></div>
                 </div>
+                
+                <div class="auth-option">
+                    <h2>📚 API Documentation</h2>
+                    <p>View the interactive API documentation.</p>
+                    <a href="/docs" class="button">📄 Swagger UI</a>
+                </div>
             </div>
             
             <script>
@@ -213,17 +270,13 @@ class AuthServer:
         </body>
         </html>
         """
-        return web.Response(text=html, content_type='text/html')
     
-    async def _gmail_auth_start(self, request: web.Request) -> web.Response:
+    async def _gmail_auth_start(self):
         """Start Gmail OAuth flow."""
         try:
             credentials_file = settings.gmail.credentials_file
             if not os.path.exists(credentials_file):
-                return web.json_response(
-                    {'error': 'Gmail credentials file not found'},
-                    status=400
-                )
+                raise HTTPException(status_code=400, detail='Gmail credentials file not found')
             
             # Create OAuth flow
             flow = Flow.from_client_secrets_file(
@@ -243,22 +296,24 @@ class AuthServer:
             self._flows[state] = flow
             
             # Redirect to Google
-            return web.Response(status=302, headers={'Location': auth_url})
+            return RedirectResponse(auth_url)
             
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error starting Gmail OAuth: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+            raise HTTPException(status_code=500, detail=str(e))
     
-    async def _gmail_auth_callback(self, request: web.Request) -> web.Response:
+    async def _gmail_auth_callback(self, request: Request) -> str:
         """Handle Gmail OAuth callback."""
         try:
             # Get state and code from query params
-            state = request.query.get('state')
-            code = request.query.get('code')
-            error = request.query.get('error')
+            state = request.query_params.get('state')
+            code = request.query_params.get('code')
+            error = request.query_params.get('error')
             
             if error:
-                html = f"""
+                return f"""
                 <html>
                     <body>
                         <h1>❌ Authentication Failed</h1>
@@ -267,10 +322,9 @@ class AuthServer:
                     </body>
                 </html>
                 """
-                return web.Response(text=html, content_type='text/html')
             
             if not state or state not in self._flows:
-                return web.json_response({'error': 'Invalid state'}, status=400)
+                raise HTTPException(status_code=400, detail='Invalid state')
             
             # Get the flow
             flow = self._flows[state]
@@ -288,9 +342,6 @@ class AuthServer:
                 token.write(credentials.to_json())
             
             logger.info(f"✅ Gmail OAuth tokens saved to: {token_file}")
-            logger.info(f"   Access token: {credentials.token[:20]}...")
-            logger.info(f"   Refresh token: {'Yes' if credentials.refresh_token else 'No'}")
-            logger.info(f"   Expiry: {credentials.expiry}")
             
             # Store in memory
             self._credentials['gmail'] = {
@@ -305,7 +356,7 @@ class AuthServer:
             
             logger.info("Gmail OAuth authentication successful - ready to use!")
             
-            html = f"""
+            return f"""
             <html>
                 <head>
                     <style>
@@ -366,11 +417,12 @@ class AuthServer:
                 </body>
             </html>
             """
-            return web.Response(text=html, content_type='text/html')
             
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error in Gmail OAuth callback: {e}")
-            html = f"""
+            return f"""
             <html>
                 <body>
                     <h1>❌ Authentication Error</h1>
@@ -379,61 +431,10 @@ class AuthServer:
                 </body>
             </html>
             """
-            return web.Response(text=html, content_type='text/html', status=500)
     
-    async def _credentials_auth(self, request: web.Request) -> web.Response:
-        """Handle direct credentials authentication."""
-        try:
-            data = await request.json()
-            provider = data.get('provider')
-            email = data.get('email')
-            password = data.get('password')
-            
-            if not all([provider, email, password]):
-                return web.json_response(
-                    {'error': 'Missing required fields'},
-                    status=400
-                )
-            
-            # Save credentials securely
-            credentials_dir = Path('credentials')
-            credentials_dir.mkdir(exist_ok=True)
-            
-            credentials_file = credentials_dir / f'{provider}_direct_credentials.json'
-            credentials_data = {
-                'email': email,
-                'password': password,
-                'method': 'direct',
-                'created_at': datetime.now().isoformat()
-            }
-            
-            with open(credentials_file, 'w') as f:
-                json.dump(credentials_data, f, indent=2)
-            
-            # Store in memory
-            self._credentials[provider] = {
-                'method': 'direct',
-                'email': email,
-                'credentials_file': str(credentials_file),
-                'authenticated_at': datetime.now().isoformat()
-            }
-            
-            logger.info(f"Direct credentials saved for {provider}: {email}")
-            
-            return web.json_response({
-                'success': True,
-                'message': f'Credentials saved for {provider}',
-                'provider': provider,
-                'email': email
-            })
-            
-        except Exception as e:
-            logger.error(f"Error saving credentials: {e}")
-            return web.json_response({'error': str(e)}, status=500)
-    
-    async def _manual_join_page(self, request: web.Request) -> web.Response:
+    def _manual_join_page(self) -> str:
         """Display manual meeting join page."""
-        html = """
+        return """
         <!DOCTYPE html>
         <html>
         <head>
@@ -618,7 +619,7 @@ class AuthServer:
                             document.getElementById('joinForm').reset();
                         } else {
                             statusDisplay.className = 'status error';
-                            statusDisplay.innerHTML = `<strong>❌ Error:</strong> ${result.error || 'Failed to join meeting'}`;
+                            statusDisplay.innerHTML = `<strong>❌ Error:</strong> ${result.detail || 'Failed to join meeting'}`;
                         }
                     } catch (error) {
                         statusDisplay.className = 'status error';
@@ -632,69 +633,63 @@ class AuthServer:
         </body>
         </html>
         """
-        return web.Response(text=html, content_type='text/html')
     
-    async def _manual_join_handler(self, request: web.Request) -> web.Response:
+    async def _manual_join_handler(self, request: ManualJoinRequest) -> Dict[str, Any]:
         """Handle manual meeting join request."""
         try:
-            data = await request.json()
-            bot_name = data.get('bot_name', '').strip()
-            meeting_url = data.get('meeting_url', '').strip()
+            bot_name = request.bot_name.strip()
+            meeting_url = request.meeting_url.strip()
             
-            # Validate inputs
+            # Additional validation handled by Pydantic, but we check empty strings
             if not bot_name:
-                return web.json_response({'error': 'Bot name is required'}, status=400)
+                raise HTTPException(status_code=400, detail='Bot name is required')
             
             if not meeting_url:
-                return web.json_response({'error': 'Meeting URL is required'}, status=400)
+                raise HTTPException(status_code=400, detail='Meeting URL is required')
             
             # Validate URL format
             if not any(domain in meeting_url.lower() for domain in ['meet.google.com', 'zoom.us', 'teams.microsoft.com']):
-                return web.json_response({
-                    'error': 'Invalid meeting URL. Supported platforms: Google Meet, Zoom, Teams'
-                }, status=400)
+                raise HTTPException(status_code=400, detail='Invalid meeting URL. Supported platforms: Google Meet, Zoom, Teams')
             
             # Check if meeting bot is available
             if not self.meeting_bot:
-                return web.json_response({
-                    'error': 'Meeting bot is not initialized'
-                }, status=503)
+                raise HTTPException(status_code=503, detail='Meeting bot is not initialized')
             
             # Trigger manual join
             result = await self.meeting_bot.manual_join_meeting(bot_name, meeting_url)
             
             if result.get('success'):
-                return web.json_response({
+                return {
                     'success': True,
                     'meeting_id': result['meeting_id'],
                     'session_id': result['session_id'],
                     'platform': result['platform'],
                     'message': 'Bot is joining the meeting'
-                })
+                }
             else:
-                return web.json_response({
-                    'error': result.get('error', 'Failed to join meeting')
-                }, status=400)
+                raise HTTPException(status_code=400, detail=result.get('error', 'Failed to join meeting'))
                 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error in manual join: {e}")
-            return web.json_response({'error': str(e)}, status=500)
+            raise HTTPException(status_code=500, detail=str(e))
     
-    async def _auth_status(self, request: web.Request) -> web.Response:
+    async def _auth_status(self) -> Dict[str, Any]:
         """Get authentication status."""
-        return web.json_response({
+        return {
             'authenticated_providers': list(self._credentials.keys()),
             'credentials': self._credentials,
             'server_time': datetime.now().isoformat()
-        })
+        }
     
-    async def _health_check(self, request: web.Request) -> web.Response:
+    async def _health_check(self) -> Dict[str, Any]:
         """Health check endpoint."""
-        return web.json_response({
+        return {
             'status': 'healthy',
             'server': 'auth_server',
             'timestamp': datetime.now().isoformat()
-        })
+        }
     
     def get_auth_status(self, provider: str) -> Optional[Dict[str, Any]]:
         """
@@ -712,7 +707,6 @@ class AuthServer:
 # Global auth server instance
 _auth_server: Optional[AuthServer] = None
 _server_thread: Optional[threading.Thread] = None
-_event_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 async def start_auth_server(host: str = "localhost", port: int = 8888, meeting_bot = None) -> AuthServer:
