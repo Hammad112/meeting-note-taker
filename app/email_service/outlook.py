@@ -422,12 +422,10 @@ class OutlookService(EmailServiceBase):
         meetings = []
         
         try:
-            now = datetime.now(ZoneInfo("UTC"))
-            end_time = now + timedelta(hours=lookahead_hours)
-            
-            # Format times for Graph API
-            start_str = now.strftime("%Y-%m-%dT%H:%M:%S.0000000")
-            end_str = end_time.strftime("%Y-%m-%dT%H:%M:%S.0000000")
+            # Get upcoming events - always query Graph in UTC for consistency
+            now_utc = datetime.now(ZoneInfo("UTC"))
+            start_str = now_utc.strftime('%Y-%m-%dT%H:%M:%SZ')
+            end_str = (now_utc + timedelta(hours=lookahead_hours)).strftime('%Y-%m-%dT%H:%M:%SZ')
             
             # Get calendar events - pass Authorization header explicitly per request
             headers = {
@@ -632,7 +630,7 @@ class OutlookService(EmailServiceBase):
                 tz = ZoneInfo(tz_str)
                 dt = dt.replace(tzinfo=tz)
             except Exception:
-                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                dt = dt.replace(tzinfo=settings.tz_info)
             
             return dt
             

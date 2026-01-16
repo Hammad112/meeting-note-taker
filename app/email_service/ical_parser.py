@@ -13,7 +13,7 @@ from dateutil.parser import parse as parse_date
 
 from app.models import MeetingDetails, MeetingPlatform, MeetingSource
 from .url_extractor import extract_meeting_url, clean_html
-from app.config import get_logger
+from app.config import get_logger, settings
 
 logger = get_logger("ical_parser")
 
@@ -42,7 +42,7 @@ def parse_icalendar(
         logger.error(f"Failed to parse iCalendar: {e}")
         return meetings
     
-    now = datetime.now(ZoneInfo("UTC"))
+    now = datetime.now(settings.tz_info)
     lookahead_end = now + timedelta(hours=lookahead_hours)
     
     for component in cal.walk():
@@ -175,21 +175,16 @@ def _parse_vevent(
 def _normalize_datetime(dt) -> datetime:
     """
     Normalize a datetime to be timezone-aware.
-    
-    Args:
-        dt: datetime or date object from iCalendar.
-        
-    Returns:
-        Timezone-aware datetime.
     """
+    logger.debug(f"Normalizing datetime: {dt} (type: {type(dt)}, tz: {getattr(dt, 'tzinfo', 'none')})")
     if hasattr(dt, 'hour'):
         # It's a datetime
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=ZoneInfo("UTC"))
+            return dt.replace(tzinfo=settings.tz_info)
         return dt
     else:
         # It's a date (all-day event)
-        return datetime.combine(dt, datetime.min.time(), tzinfo=ZoneInfo("UTC"))
+        return datetime.combine(dt, datetime.min.time(), tzinfo=settings.tz_info)
 
 
 def _generate_meeting_id(url: str, start_time: datetime, uid: str = "") -> str:

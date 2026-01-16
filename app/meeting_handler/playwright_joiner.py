@@ -251,8 +251,15 @@ class MeetingJoiner:
         
         try:
             # --- Step 1: Navigate to meeting URL ---
-            logger.info(f"Navigating to Teams meeting: {meeting.meeting_url}")
-            await page.goto(meeting.meeting_url, wait_until="networkidle")
+            # Force Teams web version to avoid desktop app popup
+            original_url = meeting.meeting_url
+            web_url = original_url
+            if "webjoin=true" not in original_url:
+                connector = "&" if "?" in original_url else "?"
+                web_url = f"{original_url}{connector}webjoin=true"
+            
+            logger.info(f"Navigating to Teams meeting (forced web): {web_url}")
+            await page.goto(web_url, wait_until="networkidle")
             logger.info("Teams meeting page loaded")
             
             # Wait for page to stabilize
@@ -263,7 +270,7 @@ class MeetingJoiner:
             
             # Wait for pre-join screen to fully load (this is critical!)
             logger.info("Waiting for pre-join screen to load...")
-            await asyncio.sleep(8)
+            await asyncio.sleep(10)
             
             # Wait for either name input OR join button to appear
             try:
@@ -313,8 +320,7 @@ class MeetingJoiner:
             logger.info(f"✅ Successfully joined Teams meeting: {meeting.title}")
             
             # --- Step 7: Post-join setup ---
-            # Post-join mute check (only once, to avoid toggling back and forth)
-            await self._teams_ensure_muted(page)
+            # Post-join mute check (removed as per user request to allow manual control)
             
             # Enable captions and start transcription
             await self._start_teams_transcription(page, meeting)
@@ -506,56 +512,106 @@ class MeetingJoiner:
             # Use JavaScript to find and click camera toggle/button
             result = await page.evaluate("""
                 () => {
-                    // Method 1: Look for button with "camera" or "video" aria-label
-                    const buttons = document.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        // Click any camera/video toggle button (even if state unclear)
-                        if (label.includes('camera') || label.includes('video')) {
-                            // Skip "turn on" or "start" buttons - camera is already off
-                            if (label.includes('turn on') || label.includes('start')) {
-                                console.log('Camera appears already off (found turn on button)');
+                    // First, try to find the specific switch element from your HTML
+                    // Look for the switch with title containing "Turn camera off"
+                    const cameraSwitches = document.querySelectorAll('[role="switch"][title*="camera"]');
+                    
+                    for (const switchEl of cameraSwitches) {
+                        const title = (switchEl.getAttribute('title') || '').toLowerCase();
+                        const checked = switchEl.getAttribute('checked') !== null || 
+                                        switchEl.getAttribute('aria-checked') === 'true';
+                        
+                        // If switch exists and is checked (camera ON), click it
+                        if (checked && title.includes('camera')) {
+                            switchEl.click();
+                            return 'clicked_camera_switch';
+                        }
+                        
+                        // If switch exists but not checked (camera OFF)
+                        if (!checked && title.includes('camera')) {
+                            return 'already_off';
+                        }
+                    }
+                    
+                    // Also check the parent container with class "fui-Switch"
+                    const switchContainers = document.querySelectorAll('.fui-Switch');
+                    for (const container of switchContainers) {
+                        const title = (container.getAttribute('title') || '').toLowerCase();
+                        if (title.includes('camera')) {
+                            // Check if input inside is checked
+                            const input = container.querySelector('input[type="checkbox"]');
+                            if (input) {
+                                const checked = input.checked || input.getAttribute('checked') !== null;
+                                if (checked) {
+                                    input.click();
+                                    return 'clicked_camera_input';
+                                } else {
+                                    return 'already_off';
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Alternative selectors for camera button
+                    const selectors = [
+                        'button[data-track-module-name*="video"]',
+                        'button[aria-label*="camera"]',
+                        'button[aria-label*="video"]',
+                        'button[title*="camera"]',
+                        'button[title*="video"]',
+                        '[data-tid="toggle-video"]',
+                        '[data-tid="prejoin-camera-button"]'
+                    ];
+
+                    for (const sel of selectors) {
+                        const btn = document.querySelector(sel);
+                        if (btn && btn.offsetParent !== null) {
+                            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                            const title = (btn.getAttribute('title') || '').toLowerCase();
+                            const pressed = btn.getAttribute('aria-pressed') === 'true';
+
+                            // If button indicates already OFF (e.g. label says "Turn on camera")
+                            if (label.includes('turn on') || title.includes('turn on')) {
                                 return 'already_off';
                             }
-                            // Click anything else camera-related
-                            btn.click();
-                            console.log('Clicked camera button:', label);
-                            return 'clicked_button';
+                            
+                            // If pressed=true on a camera button, it often means it's ON
+                            if (pressed && (label.includes('camera') || label.includes('video'))) {
+                                btn.click();
+                                return 'clicked_selector';
+                            }
+                            
+                            // For the specific data-tid="toggle-video" element
+                            if (sel.includes('toggle-video')) {
+                                btn.click();
+                                return 'clicked_toggle_video';
+                            }
                         }
                     }
                     
-                    // Method 2: Find toggle switches - camera is usually first
-                    const toggles = document.querySelectorAll('[role="switch"]');
-                    console.log('Found ' + toggles.length + ' toggle switches');
-                    
-                    if (toggles.length >= 1) {
-                        // Just click the first toggle (camera) without checking state
-                        // The state detection isn't reliable on Teams light meetings
-                        const cameraToggle = toggles[0];
-                        const isOn = cameraToggle.getAttribute('aria-checked') === 'true';
-                        console.log('First toggle aria-checked: ' + cameraToggle.getAttribute('aria-checked'));
-                        
-                        // If checked=true, camera is ON - click to turn off
-                        if (isOn) {
-                            cameraToggle.click();
-                            console.log('Clicked camera toggle (was ON)');
-                            return 'clicked_toggle_on';
-                        }
-                        // If checked=false, camera might be off or might be unreliable
-                        // Don't click to avoid toggling it ON
-                        return 'toggle_appears_off';
-                    }
-                    
+                    // Try keyboard shortcut as last resort
                     return 'not_found';
                 }
             """)
             
             logger.info(f"Camera toggle result: {result}")
+            
             if result.startswith('clicked'):
+                await asyncio.sleep(0.5)
+            elif result == 'not_found':
+                # Try keyboard shortcut Ctrl+Shift+O
+                logger.info("Trying keyboard shortcut Ctrl+Shift+O...")
+                await page.keyboard.press("Control+Shift+O")
                 await asyncio.sleep(0.5)
                 
         except Exception as e:
             logger.warning(f"Error turning off camera: {e}")
+            # Fallback to keyboard shortcut
+            try:
+                await page.keyboard.press("Control+Shift+O")
+                await asyncio.sleep(0.5)
+            except:
+                pass
     
     async def _teams_turn_off_mic(self, page: Page) -> None:
         """Turn off microphone in Teams pre-join screen."""
@@ -565,50 +621,82 @@ class MeetingJoiner:
             # Use JavaScript to find and click the mic toggle
             result = await page.evaluate("""
                 () => {
-                    // Method 1: Find all toggles - in Teams light meetings, second toggle is usually mic
-                    const toggles = document.querySelectorAll('[role="switch"]');
-                    console.log('Found ' + toggles.length + ' toggle switches');
-                    
-                    if (toggles.length >= 2) {
-                        const micToggle = toggles[1];
-                        const isOn = micToggle.getAttribute('aria-checked') === 'true';
-                        console.log('Mic toggle aria-checked: ' + micToggle.getAttribute('aria-checked'));
-                        if (isOn) {
-                            micToggle.click();
-                            console.log('Clicked mic toggle (second) - was ON');
-                            return 'clicked_second_toggle';
-                        } else {
-                            console.log('Mic toggle (second) already OFF');
-                            return 'already_off';
+                    // Try to find the mic button using multiple strategies
+                    const selectors = [
+                        'button[data-track-module-name="muteAudioButton"]',
+                        'button[title="Mute mic"]',
+                        'button[data-tid="toggle-mute"]',
+                        'button[aria-label*="microphone"]',
+                        'button[aria-label*="Mute"]',
+                        '[data-tid="prejoin-mic-button"]'
+                    ];
+
+                    for (const sel of selectors) {
+                        const btn = document.querySelector(sel);
+                        if (btn && btn.offsetParent !== null) {
+                            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                            const title = (btn.getAttribute('title') || '').toLowerCase();
+                            const pressed = btn.getAttribute('aria-pressed') === 'true';
+                            const checked = btn.getAttribute('aria-checked') === 'true';
+
+                            // If button says "Unmute" or label indicates it's already muted, stay away
+                            if (label.includes('unmute') || title.includes('unmute') || (pressed && label.includes('mute')) || (checked && label.includes('mute'))) {
+                                console.log('Mic appears already muted:', sel);
+                                return 'already_off';
+                            }
+
+                            // If we find "Mute mic" or similar, click it
+                            btn.click();
+                            console.log('Clicked mic button using:', sel);
+                            return 'clicked_' + sel;
                         }
                     }
-                    
-                    // Method 2: Find button that says "turn off microphone" or "mute"
-                    const buttons = document.querySelectorAll('button');
+                   // Method 3: Find any button that says "turn off microphone" or "mute"
+                    const buttons = Array.from(document.querySelectorAll('button'));
                     for (const btn of buttons) {
                         const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        if (label.includes('turn off microphone') || label.includes('mute microphone') ||
-                            label === 'mute' || label.includes('turn mic off')) {
+                        const title = (btn.getAttribute('title') || '').toLowerCase();
+                        const text = (btn.textContent || '').toLowerCase();
+
+                        if (label.includes('mute mic') || title.includes('mute mic') || text.includes('mute mic') || 
+                            label.includes('mute microphone') || label === 'mute') {
+                            
+                            // If it already says "Unmute", it's muted
+                            if (label.includes('unmute') || title.includes('unmute') || text.includes('unmute')) {
+                                return 'already_off';
+                            }
+                            
                             btn.click();
-                            console.log('Clicked mic mute button:', label);
                             return 'clicked_mute_button';
                         }
                     }
-                    
-                    // Method 3: Just click the second toggle if it exists (assume it's mic)
-                    if (toggles.length >= 2) {
-                        toggles[1].click();
-                        console.log('Force clicked second toggle');
-                        return 'force_clicked';
-                    }
-                    
                     return 'not_found';
                 }
             """)
             
-            if result.startswith('clicked') or result == 'force_clicked':
-                logger.info(f"✅ Mic toggle: {result}")
-                await asyncio.sleep(0.5)
+            if result.startswith('clicked'):
+                logger.info(f"✅ Mic toggle (Method 3): {result}")
+                await asyncio.sleep(1)
+                
+                # Double check - if it still says "Mute", try again or send shortcut
+                check_again = await page.evaluate("""
+                    () => {
+                        const buttons = document.querySelectorAll('button');
+                        for (const btn of buttons) {
+                            const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+                            const title = (btn.getAttribute('title') || '').toLowerCase();
+                            if ((label.includes('mute mic') || title.includes('mute mic')) && 
+                                !(label.includes('unmute') || title.includes('unmute'))) {
+                                return 'still_unmuted';
+                            }
+                        }
+                        return 'muted_or_not_found';
+                    }
+                """)
+                if check_again == 'still_unmuted':
+                    logger.info("Mic still appears unmuted after click, trying Ctrl+Shift+M...")
+                    await page.keyboard.press("Control+Shift+M")
+                    await asyncio.sleep(0.5)
             elif result == 'already_off':
                 logger.info("Mic already OFF")
             else:
@@ -854,172 +942,6 @@ class MeetingJoiner:
         logger.error(f"❌ Timed out waiting for Teams meeting admission ({timeout}s)")
         return False
     
-    async def _teams_ensure_muted(self, page: Page) -> None:
-        """
-        Ensure microphone and camera are muted while in the meeting.
-        Uses keyboard shortcuts which are most reliable.
-        """
-        logger.info("Muting mic/camera via keyboard shortcuts (post-join)...")
-        
-        # Wait for meeting controls to fully load
-        await asyncio.sleep(2)
-        
-        # Use keyboard shortcuts - most reliable method for Teams
-        # Ctrl+Shift+M = Toggle mute (Windows/Linux)
-        # Cmd+Shift+M = Toggle mute (Mac)
-        # Ctrl+Shift+O = Toggle camera (Windows/Linux)  
-        # Cmd+Shift+O = Toggle camera (Mac)
-        
-        import platform
-        is_mac = platform.system() == "Darwin"
-        modifier = "Meta" if is_mac else "Control"
-        
-        # First check if mic is unmuted, then mute it
-        try:
-            # Check mic state by looking for unmute button (means mic is muted)
-            mic_muted = await page.evaluate("""
-                () => {
-                    const buttons = document.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        if (label.includes('unmute')) {
-                            return true;  // Mic is muted (unmute button visible)
-                        }
-                    }
-                    return false;  // Mic is not muted
-                }
-            """)
-            
-            if not mic_muted:
-                logger.info(f"Mic appears unmuted, pressing {modifier}+Shift+M to mute...")
-                await page.keyboard.press(f"{modifier}+Shift+M")
-                await asyncio.sleep(0.5)
-                logger.info("✅ Sent mute shortcut")
-            else:
-                logger.info("Microphone already muted")
-                
-        except Exception as e:
-            # If check fails, just send the shortcut anyway
-            logger.info(f"Sending mute shortcut {modifier}+Shift+M...")
-            try:
-                await page.keyboard.press(f"{modifier}+Shift+M")
-                await asyncio.sleep(0.5)
-            except:
-                pass
-        
-        # Turn off camera - use direct button click (more reliable than shortcut)
-        try:
-            camera_result = await page.evaluate("""
-                () => {
-                    const buttons = document.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        // If we find "turn on camera" - camera is already off
-                        if (label.includes('turn on camera') || label.includes('start camera')) {
-                            return 'already_off';
-                        }
-                        // If we find "turn off camera" - camera is on, click it!
-                        if (label.includes('turn off camera') || label.includes('stop camera') ||
-                            label.includes('turn camera off') || label.includes('stop video')) {
-                            btn.click();
-                            return 'clicked_off';
-                        }
-                    }
-                    
-                    // Also check for toggle buttons with video/camera in label
-                    for (const btn of buttons) {
-                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        const pressed = btn.getAttribute('aria-pressed');
-                        if ((label.includes('camera') || label.includes('video')) && pressed === 'true') {
-                            btn.click();
-                            return 'clicked_toggle';
-                        }
-                    }
-                    
-                    return 'not_found';
-                }
-            """)
-            
-            if camera_result == 'clicked_off' or camera_result == 'clicked_toggle':
-                logger.info(f"✅ Camera turned off via button click: {camera_result}")
-                await asyncio.sleep(0.5)
-            elif camera_result == 'already_off':
-                logger.info("Camera already off")
-            else:
-                # Fallback to keyboard shortcut
-                logger.info(f"Camera button not found, trying shortcut {modifier}+Shift+O...")
-                await page.keyboard.press(f"{modifier}+Shift+O")
-                await asyncio.sleep(0.5)
-                logger.info("✅ Sent camera shortcut")
-                
-        except Exception as e:
-            logger.debug(f"Camera toggle failed: {e}")
-        
-        # Method 3: Try keyboard shortcuts as final fallback
-        try:
-            # Ctrl+Shift+M is often mute shortcut in Teams
-            await page.keyboard.press("Control+Shift+M")
-            logger.debug("Sent Ctrl+Shift+M (mute shortcut)")
-        except:
-            pass
-    
-    async def _teams_periodic_mute_check(self, page: Page, meeting: MeetingDetails) -> None:
-        """
-        Periodically check and ensure mic/camera stay muted.
-        Runs in background during the meeting.
-        """
-        check_count = 0
-        max_checks = 5  # Only check first 5 times (first ~2.5 minutes)
-        
-        try:
-            while check_count < max_checks:
-                if page.is_closed():
-                    break
-                
-                await asyncio.sleep(30)  # Check every 30 seconds
-                check_count += 1
-                
-                try:
-                    # Quick JavaScript check and mute
-                    result = await page.evaluate("""
-                        () => {
-                            const buttons = document.querySelectorAll('button');
-                            let actions = [];
-                            
-                            for (const btn of buttons) {
-                                const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                                
-                                // Click mute if mic seems to be on
-                                if (label.includes('turn off microphone') || 
-                                    (label === 'mute' && !label.includes('unmute')) ||
-                                    label.includes('mute microphone')) {
-                                    btn.click();
-                                    actions.push('muted_mic');
-                                }
-                                
-                                // Click to turn off camera if on
-                                if (label.includes('turn off camera') || label.includes('turn camera off')) {
-                                    btn.click();
-                                    actions.push('disabled_camera');
-                                }
-                            }
-                            
-                            return actions;
-                        }
-                    """)
-                    
-                    if result and len(result) > 0:
-                        logger.info(f"Periodic mute check #{check_count}: {result}")
-                    else:
-                        logger.debug(f"Periodic mute check #{check_count}: already muted")
-                        
-                except Exception as e:
-                    logger.debug(f"Periodic mute check error: {e}")
-                    
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.debug(f"Periodic mute task ended: {e}")
 
     async def _enable_teams_captions(self, page: Page) -> bool:
         """
@@ -1394,25 +1316,54 @@ class MeetingJoiner:
                 pass
 
             # --- 2. Auth & Input Name (Guest vs Login) ---
-            # Priority: Guest Name Input
-            name_input = page.get_by_placeholder("Your name")
-            if await name_input.is_visible(timeout=10000):
-                bot_name = meeting.title  # Use the bot name from meeting details
+            # --- 2. Auth & Input Name (Guest vs Login) ---
+            # Try multiple selectors for the name input
+            name_input = None
+            for selector in [
+                'input[placeholder="Your name"]',
+                'input[placeholder="Enter your name"]',
+                'input[aria-label="Your name"]',
+                'input[aria-label="Enter your name"]',
+                'input[type="text"]' # Fallback to any text input if others fail
+            ]:
+                try:
+                    # Specific check for generic input to ensure it's the right one (optional refinement)
+                    input_el = page.locator(selector).first
+                    if await input_el.is_visible(timeout=2000):
+                        name_input = input_el
+                        break
+                except:
+                    continue
+            
+            if name_input:
+                bot_name = meeting.title or "Assistant"
                 logger.info(f"Guest mode detected. Entering bot name: {bot_name}...")
                 await name_input.fill(bot_name)
+                await asyncio.sleep(1)
                 # Proceed to click Join
             else:
                 # If no guest input, check for login
-                if "accounts.google.com" in page.url or await page.get_by_text("Sign in").is_visible():
-                    logger.info("Login page detected. Attempting auto-login...")
+                # But be careful, "Sign in" might be visible even on guest page (top right)
+                # We strictly check if we are FORCED to login (i.e. we are on accounts.google.com or similar)
+                
+                # Check URL for login page
+                is_login_page = "accounts.google.com" in page.url
+                
+                # Check for prominent central sign-in prompt (not just header button)
+                is_signin_prompt = await page.get_by_text("Sign in to join").is_visible()
+                
+                if is_login_page or is_signin_prompt:
+                    logger.info("Login page/prompt detected. Attempting auto-login...")
                     if not await self._perform_auto_login(page):
                          logger.error("Auto-login failed or no credentials. Aborting.")
                          return
+                else:
+                    logger.warning("Could not find name input AND not clearly on login page. Continuing to look for Join buttons...")
 
             # --- 2.5 Ensure Muted in Lobby ---
             # Click buttons to mute if they are active
             logger.info("Ensuring microphone and camera are muted in lobby...")
-            await self._ensure_mute(page)
+            # await self._ensure_mute(page)
 
             # --- 3. Click Join Action (Ask to Join / Join Now) ---
             join_clicked = False
@@ -1482,7 +1433,7 @@ class MeetingJoiner:
             # Now we are 100% sure we are in.
 
             # Mute Audio/Video
-            await self._ensure_mute(page)
+            # await self._ensure_mute(page)
 
             # Start Transcription
             await self._start_transcription(page, meeting)

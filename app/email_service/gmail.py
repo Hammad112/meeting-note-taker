@@ -222,7 +222,7 @@ class GmailService(EmailServiceBase):
         meetings = []
         
         try:
-            now = datetime.now(ZoneInfo("UTC"))
+            now = datetime.now(settings.tz_info)
             time_max = now + timedelta(hours=lookahead_hours)
             
             # Fetch all pages of calendar events
@@ -380,7 +380,7 @@ class GmailService(EmailServiceBase):
         elif 'date' in time_info:
             # All-day event
             date_str = time_info['date']
-            return datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=ZoneInfo("UTC"))
+            return datetime.strptime(date_str, '%Y-%m-%d').replace(tzinfo=settings.tz_info)
         return None
     
     async def _get_email_invites(

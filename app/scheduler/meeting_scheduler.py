@@ -44,7 +44,7 @@ class MeetingScheduler:
         # Create scheduler
         self._scheduler = AsyncIOScheduler(
             jobstores=jobstores,
-            timezone=ZoneInfo("UTC")
+            timezone=settings.tz_info
         )
         
         # Track scheduled meetings by ID and by URL
@@ -168,7 +168,7 @@ class MeetingScheduler:
         )
         
         # If join time is in the past but meeting hasn't started, join now
-        now = datetime.now(ZoneInfo("UTC"))
+        now = datetime.now(settings.tz_info)
         if join_time < now:
             if meeting.has_started and not meeting.has_ended:
                 # Meeting is in progress, join immediately
@@ -184,7 +184,7 @@ class MeetingScheduler:
             # Schedule join job
             self._scheduler.add_job(
                 self._meeting_join_job,
-                trigger=DateTrigger(run_date=join_time, timezone=ZoneInfo("UTC")),
+                trigger=DateTrigger(run_date=join_time, timezone=settings.tz_info),
                 args=[meeting],
                 id=f"join_{meeting.meeting_id}",
                 name=f"Join: {meeting.title}",
@@ -195,7 +195,7 @@ class MeetingScheduler:
             # Schedule end job
             self._scheduler.add_job(
                 self._meeting_end_job,
-                trigger=DateTrigger(run_date=meeting.end_time, timezone=ZoneInfo("UTC")),
+                trigger=DateTrigger(run_date=meeting.end_time, timezone=settings.tz_info),
                 args=[meeting],
                 id=f"end_{meeting.meeting_id}",
                 name=f"End: {meeting.title}",
@@ -210,8 +210,9 @@ class MeetingScheduler:
             
             logger.info(
                 f"Scheduled meeting: {meeting.title} "
-                f"(join at {join_time.strftime('%H:%M')}, "
-                f"end at {meeting.end_time.strftime('%H:%M')})"
+                f"(ID: {meeting.meeting_id}, "
+                f"Join: {join_time.isoformat()}, "
+                f"End: {meeting.end_time.isoformat()})"
             )
             return True
             

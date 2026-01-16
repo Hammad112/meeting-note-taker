@@ -11,6 +11,8 @@ from typing import Dict, Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Dict, Any, List, Optional
 
 from app.bot import MeetingBot
 from app.config import settings, logger
@@ -20,6 +22,10 @@ from app.auth_server import AuthManager
 bot = MeetingBot()
 # Initialize auth manager (pure logic service)
 auth_manager = AuthManager(meeting_bot=bot)
+
+# In-memory storage for reported meetings and sessions
+reported_meetings: Dict[str, Any] = {}
+reported_sessions: Dict[str, Any] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -69,6 +75,23 @@ app = FastAPI(
 class ManualJoinRequest(BaseModel):
     bot_name: str = Field(..., json_schema_extra={"examples": ["Bot-01"]})
     meeting_url: str = Field(..., json_schema_extra={"examples": ["https://meet.google.com/abc-defg-hij"]})
+
+class MeetingReport(BaseModel):
+    meeting_id: str
+    title: str
+    start_time: str
+    end_time: str
+    meeting_url: str
+    platform: str
+    source: str
+    organizer: str
+
+class SessionReport(BaseModel):
+    session_id: str
+    meeting_id: str
+    bot_name: str
+    platform: str
+    start_time: str
 
 # --- 1. Global Status & Health ---
 
@@ -181,6 +204,50 @@ async def manual_join(request: ManualJoinRequest):
 async def list_sessions():
     """Lists all active meeting sessions currently managed by the bot."""
     return bot.active_sessions
+
+# --- 4. Reporting Endpoints (Internal Bot usage) ---
+
+@app.post("/api/meetings", tags=["Internal"], summary="Register Meeting")
+async def register_meeting(report: MeetingReport):
+    """Internal: allows the bot to report discovered meetings."""
+    reported_meetings[report.meeting_id] = report.model_dump()
+    reported_meetings[report.meeting_id]["status"] = "scheduled"
+    logger.debug(f"Meeting reported: {report.title}")
+    return {"status": "success"}
+
+@app.patch("/api/meetings/{meeting_id}/complete", tags=["Internal"])
+async def complete_meeting(meeting_id: str):
+    """Internal: allows the bot to mark a meeting as completed."""
+    if meeting_id in reported_meetings:
+        reported_meetings[meeting_id]["status"] = "completed"
+        reported_meetings[meeting_id]["completed_at"] = datetime.now().isoformat()
+    return {"status": "success"}
+
+@app.post("/api/sessions", tags=["Internal"])
+async def start_session(report: SessionReport):
+    """Internal: allows the bot to report session start."""
+    reported_sessions[report.session_id] = report.model_dump()
+    reported_sessions[report.session_id]["status"] = "active"
+    logger.debug(f"Session started: {report.session_id}")
+    return {"status": "success"}
+
+@app.patch("/api/sessions/{session_id}/end", tags=["Internal"])
+async def end_session(session_id: str, data: Dict[str, Any]):
+    """Internal: allows the bot to report session end."""
+    if session_id in reported_sessions:
+        reported_sessions[session_id]["status"] = "ended"
+        reported_sessions[session_id]["ended_at"] = data.get("ended_at", datetime.now().isoformat())
+    return {"status": "success"}
+
+@app.get("/api/reported/meetings", tags=["Internal"])
+async def get_reported_meetings():
+    """Get history of meetings reported to the backend."""
+    return list(reported_meetings.values())
+
+@app.get("/api/reported/sessions", tags=["Internal"])
+async def get_reported_sessions():
+    """Get history of sessions reported to the backend."""
+    return list(reported_sessions.values())
 
 if __name__ == "__main__":
     import uvicorn

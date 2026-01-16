@@ -7,6 +7,7 @@ import hashlib
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
+from app.config import settings
 
 
 def generate_id(prefix: str = "", length: int = 16) -> str:
@@ -55,7 +56,7 @@ def parse_datetime(dt_string: str, default_tz: str = "UTC") -> Optional[datetime
     try:
         dt = parse(dt_string)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=ZoneInfo(default_tz))
+            dt = dt.replace(tzinfo=settings.tz_info)
         return dt
     except Exception:
         return None

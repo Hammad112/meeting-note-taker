@@ -1,0 +1,26 @@
+version: "3.9"
+
+services:
+  meeting-bot:
+    build: .
+    container_name: meeting-bot-api
+    ports:
+      - "8888:8888"
+    environment:
+      ENV: production
+      LOG_LEVEL: info
+
+      # OAuth credentials
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET}
+
+      # Used for OAuth redirects
+      BASE_URL: http://localhost:8888
+
+    volumes:
+      # Optional – remove in production
+      - .:/app
+
+    restart: unless-stopped

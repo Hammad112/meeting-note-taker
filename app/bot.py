@@ -15,7 +15,7 @@ from app.config import settings, get_logger
 from app.email_service import CombinedEmailService
 from app.scheduler import MeetingScheduler
 from app.meeting_handler import MeetingJoiner
-from app.models import MeetingDetails, MeetingSession
+from app.models import MeetingDetails, MeetingSession, MeetingPlatform, MeetingSource
 
 logger = get_logger("bot")
 
@@ -148,7 +148,7 @@ class MeetingBot:
                 return {'success': False, 'error': 'Unsupported meeting platform'}
             
             meeting_id = f"manual_{uuid.uuid4().hex[:12]}"
-            now = datetime.now(ZoneInfo("UTC"))
+            now = datetime.now(settings.tz_info)
             
             meeting = MeetingDetails(
                 meeting_id=meeting_id,
@@ -225,7 +225,8 @@ class MeetingBot:
     
     async def _on_meeting_join(self, meeting: MeetingDetails) -> None:
         """Callback when it's time to join a meeting."""
-        now = datetime.now(ZoneInfo("UTC"))
+        # Use automated tz_info for all comparisons
+        now = datetime.now(settings.tz_info)
         time_since_start = (now - meeting.start_time).total_seconds() / 60
         max_late_join = settings.scheduler.max_join_after_start_minutes
         
@@ -245,7 +246,7 @@ class MeetingBot:
             session = MeetingSession(
                 meeting=meeting,
                 session_id=session_id,
-                started_at=datetime.now(ZoneInfo("UTC"))
+                started_at=datetime.now(settings.tz_info)
             )
             self.active_sessions[meeting.meeting_id] = session
             await self._start_session(session)
@@ -271,12 +272,17 @@ class MeetingBot:
     async def _start_session(self, session: MeetingSession) -> None:
         """Start a session in backend."""
         try:
+            if not session.started_at:
+                session.started_at = datetime.now(settings.tz_info)
+            
             response = await self.http_client.post(
                 "/api/sessions",
                 json={
                     "session_id": session.session_id,
                     "meeting_id": session.meeting.meeting_id,
-                    "started_at": session.started_at.isoformat()
+                    "bot_name": self._get_bot_name(session.meeting),
+                    "platform": session.meeting.platform.value,
+                    "start_time": session.started_at.isoformat()
                 }
             )
             response.raise_for_status()
@@ -288,7 +294,7 @@ class MeetingBot:
     async def _end_session(self, session: MeetingSession) -> None:
         """End a session in backend."""
         try:
-            session.ended_at = datetime.now(ZoneInfo("UTC"))
+            session.ended_at = datetime.now(settings.tz_info)
             response = await self.http_client.patch(
                 f"/api/sessions/{session.session_id}/end",
                 json={"ended_at": session.ended_at.isoformat()}
@@ -315,6 +321,16 @@ class MeetingBot:
             )
         except Exception as e:
             logger.warning(f"Failed to report meeting to backend: {e}")
+
+    def _get_bot_name(self, meeting: MeetingDetails) -> str:
+        """Get the appropriate bot name for the platform."""
+        if meeting.platform == MeetingPlatform.TEAMS:
+            return settings.bot.teams_bot_name or settings.bot.default_bot_name
+        elif meeting.platform == MeetingPlatform.ZOOM:
+            return settings.bot.zoom_bot_name or settings.bot.default_bot_name
+        elif meeting.platform == MeetingPlatform.GOOGLE_MEET:
+            return settings.bot.google_meet_bot_name or settings.bot.default_bot_name
+        return settings.bot.default_bot_name
 
     async def _report_meeting_completed(self, meeting: MeetingDetails) -> None:
         """Report meeting completion."""

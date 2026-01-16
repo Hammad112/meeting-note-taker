@@ -145,6 +145,8 @@ TEAMS_SELECTORS = {
         'button[data-tid="toggle-mute"]',
         '[data-tid="prejoin-mic-button"]',
         'button[aria-label*="microphone"][aria-pressed]',
+        'button[data-track-module-name="muteAudioButton"]',
+        'button[title="Mute mic"]',
     ],
     
     "prejoin_camera_toggle": [

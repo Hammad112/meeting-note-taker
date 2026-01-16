@@ -7,6 +7,7 @@ from typing import Optional, List
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from enum import Enum
+from dateutil import tz
 
 
 class EmailProvider(str, Enum):
@@ -302,6 +303,7 @@ class Settings(BaseSettings):
     # Application settings
     debug: bool = Field(default=False, description="Enable debug mode")
     log_level: str = Field(default="INFO", description="Logging level")
+    timezone: str = Field(default="auto", description="Application timezone (e.g., 'Asia/Karachi' or 'auto')")
     
     # Supported platforms
     enabled_platforms: List[MeetingPlatform] = Field(
@@ -321,6 +323,17 @@ class Settings(BaseSettings):
         if v.upper() not in valid_levels:
             raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
         return v.upper()
+
+    @property
+    def tz_info(self):
+        """Get the actual tzinfo object based on settings (auto-detected if 'auto')."""
+        if self.timezone.lower() == "auto":
+            return tz.tzlocal()
+        try:
+            from zoneinfo import ZoneInfo
+            return ZoneInfo(self.timezone)
+        except Exception:
+            return tz.UTC
 
 
 # Global settings instance
