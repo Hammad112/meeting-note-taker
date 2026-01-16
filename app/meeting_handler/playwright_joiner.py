@@ -81,31 +81,34 @@ class MeetingJoiner:
             page: Playwright page to capture
             step_name: Descriptive name for this step (e.g., "teams_page_loaded")
         """
-        try:
-            # Create screenshots directory if it doesn't exist
-            screenshot_dir = Path("logs/screenshots")
-            screenshot_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Generate timestamp and filename
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._screenshot_counter += 1
-            counter_str = f"{self._screenshot_counter:02d}"
-            
-            base_filename = f"{timestamp}_{counter_str}_{step_name}"
-            png_path = screenshot_dir / f"{base_filename}.png"
-            html_path = screenshot_dir / f"{base_filename}.html"
-            
-            # Take screenshot
-            await page.screenshot(path=str(png_path), full_page=True)
-            logger.info(f"📸 Screenshot saved: {png_path.name}")
-            
-            # Save HTML content
-            html_content = await page.content()
-            html_path.write_text(html_content, encoding='utf-8')
-            logger.info(f"💾 HTML saved: {html_path.name}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to save debug screenshot for {step_name}: {e}")
+        # DEBUG SCREENSHOTS DISABLED - Uncomment to enable
+        return
+        
+        # try:
+        #     # Create screenshots directory if it doesn't exist
+        #     screenshot_dir = Path("logs/screenshots")
+        #     screenshot_dir.mkdir(parents=True, exist_ok=True)
+        #     
+        #     # Generate timestamp and filename
+        #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        #     self._screenshot_counter += 1
+        #     counter_str = f"{self._screenshot_counter:02d}"
+        #     
+        #     base_filename = f"{timestamp}_{counter_str}_{step_name}"
+        #     png_path = screenshot_dir / f"{base_filename}.png"
+        #     html_path = screenshot_dir / f"{base_filename}.html"
+        #     
+        #     # Take screenshot
+        #     await page.screenshot(path=str(png_path), full_page=True)
+        #     logger.info(f"📸 Screenshot saved: {png_path.name}")
+        #     
+        #     # Save HTML content
+        #     html_content = await page.content()
+        #     html_path.write_text(html_content, encoding='utf-8')
+        #     logger.info(f"💾 HTML saved: {html_path.name}")
+        #     
+        # except Exception as e:
+        #     logger.warning(f"Failed to save debug screenshot for {step_name}: {e}")
 
     async def start(self) -> None:
         """
