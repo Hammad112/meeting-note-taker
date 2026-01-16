@@ -64,11 +64,48 @@ class MeetingJoiner:
         self.active_contexts: dict[str, BrowserContext] = {}
 
         self.transcription_service = TranscriptionService()
+        
+        # Debug screenshot counter for naming
+        self._screenshot_counter = 0
 
     @property
     def is_running(self) -> bool:
         """Return True if the browser is currently available."""
         return self._browser is not None
+    
+    async def _save_debug_screenshot(self, page: Page, step_name: str) -> None:
+        """
+        Save a debug screenshot and HTML snapshot for a specific step.
+        
+        Args:
+            page: Playwright page to capture
+            step_name: Descriptive name for this step (e.g., "teams_page_loaded")
+        """
+        try:
+            # Create screenshots directory if it doesn't exist
+            screenshot_dir = Path("logs/screenshots")
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate timestamp and filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._screenshot_counter += 1
+            counter_str = f"{self._screenshot_counter:02d}"
+            
+            base_filename = f"{timestamp}_{counter_str}_{step_name}"
+            png_path = screenshot_dir / f"{base_filename}.png"
+            html_path = screenshot_dir / f"{base_filename}.html"
+            
+            # Take screenshot
+            await page.screenshot(path=str(png_path), full_page=True)
+            logger.info(f"📸 Screenshot saved: {png_path.name}")
+            
+            # Save HTML content
+            html_content = await page.content()
+            html_path.write_text(html_content, encoding='utf-8')
+            logger.info(f"💾 HTML saved: {html_path.name}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save debug screenshot for {step_name}: {e}")
 
     async def start(self) -> None:
         """
@@ -265,12 +302,21 @@ class MeetingJoiner:
             # Wait for page to stabilize
             await asyncio.sleep(5)
             
+            # 📸 Screenshot: Page loaded
+            await self._save_debug_screenshot(page, "teams_page_loaded")
+            
             # --- Step 2: Handle "Continue on this browser" prompt ---
             await self._teams_handle_continue_browser(page)
+            
+            # 📸 Screenshot: After handling continue browser
+            await self._save_debug_screenshot(page, "after_continue_browser")
             
             # Wait for pre-join screen to fully load (this is critical!)
             logger.info("Waiting for pre-join screen to load...")
             await asyncio.sleep(10)
+            
+            # 📸 Screenshot: Pre-join screen
+            await self._save_debug_screenshot(page, "pre_join_screen")
             
             # Wait for either name input OR join button to appear
             try:
@@ -294,11 +340,20 @@ class MeetingJoiner:
                 await asyncio.sleep(3)
                 await self._teams_enter_name(page, bot_name)
             
+            # 📸 Screenshot: After name entry
+            await self._save_debug_screenshot(page, "after_name_entry")
+            
             # --- Step 4: Mute microphone and camera before joining ---
             await self._teams_mute_before_join(page)
             
+            # 📸 Screenshot: After mute
+            await self._save_debug_screenshot(page, "after_mute_setup")
+            
             # Small wait after muting
             await asyncio.sleep(1)
+            
+            # 📸 Screenshot: Before clicking join
+            await self._save_debug_screenshot(page, "before_clicking_join")
             
             # --- Step 5: Click "Join now" button ---
             join_success = await self._teams_click_join(page)
@@ -307,11 +362,20 @@ class MeetingJoiner:
                 await asyncio.sleep(2)
                 join_success = await self._teams_click_join(page)
             
+            # 📸 Screenshot: After clicking join
+            await asyncio.sleep(2)
+            await self._save_debug_screenshot(page, "after_clicking_join")
+            
+            # Handle permission dialog if it appears
+            await self._handle_teams_permission_dialog(page)
+            
             # --- Step 6: Wait for admission (lobby handling) ---
             admitted = await self._wait_for_teams_admission(page, timeout=600)
             
             if not admitted:
                 logger.error(f"Failed to join Teams meeting: {meeting.title}")
+                # 📸 Screenshot: Admission failed
+                await self._save_debug_screenshot(page, "admission_failed")
                 await context.close()
                 if meeting.meeting_url in self.active_contexts:
                     del self.active_contexts[meeting.meeting_url]
@@ -319,11 +383,17 @@ class MeetingJoiner:
             
             logger.info(f"✅ Successfully joined Teams meeting: {meeting.title}")
             
+            # 📸 Screenshot: Successfully joined
+            await self._save_debug_screenshot(page, "successfully_joined")
+            
             # --- Step 7: Post-join setup ---
             # Post-join mute check (removed as per user request to allow manual control)
             
             # Enable captions and start transcription
             await self._start_teams_transcription(page, meeting)
+            
+            # 📸 Screenshot: After starting transcription
+            await self._save_debug_screenshot(page, "after_transcription_start")
             
             # --- Step 8: Start monitoring task ---
             asyncio.create_task(self._monitor_teams_meeting(context, page, meeting))
@@ -333,6 +403,13 @@ class MeetingJoiner:
             logger.error(f"Error during Teams join flow: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            
+            # 📸 Screenshot: Error state
+            try:
+                await self._save_debug_screenshot(page, "teams_join_error")
+            except:
+                pass
+            
             await context.close()
             if meeting.meeting_url in self.active_contexts:
                 del self.active_contexts[meeting.meeting_url]
@@ -347,6 +424,9 @@ class MeetingJoiner:
         """
         logger.info("Checking for 'Continue on this browser' prompt...")
         
+        # 📸 Screenshot: Before continue click attempt
+        await self._save_debug_screenshot(page, "before_continue_click")
+        
         selectors = get_selectors_for("continue_browser")
         
         for selector in selectors:
@@ -358,6 +438,8 @@ class MeetingJoiner:
                         await first_visible.click()
                         logger.info(f"Clicked 'Continue on this browser' using: {selector}")
                         await asyncio.sleep(2)
+                        # 📸 Screenshot: After continue click
+                        await self._save_debug_screenshot(page, "after_continue_click")
                         return True
             except PlaywrightTimeoutError:
                 continue
@@ -508,6 +590,9 @@ class MeetingJoiner:
         """Turn off camera in Teams pre-join screen."""
         logger.info("Attempting to turn off camera...")
         
+        # 📸 Screenshot: Before camera toggle
+        await self._save_debug_screenshot(page, "before_camera_toggle")
+        
         try:
             # Use JavaScript to find and click camera toggle/button
             result = await page.evaluate("""
@@ -598,6 +683,8 @@ class MeetingJoiner:
             
             if result.startswith('clicked'):
                 await asyncio.sleep(0.5)
+                # 📸 Screenshot: After camera toggle
+                await self._save_debug_screenshot(page, "after_camera_toggle")
             elif result == 'not_found':
                 # Try keyboard shortcut Ctrl+Shift+O
                 logger.info("Trying keyboard shortcut Ctrl+Shift+O...")
@@ -616,6 +703,9 @@ class MeetingJoiner:
     async def _teams_turn_off_mic(self, page: Page) -> None:
         """Turn off microphone in Teams pre-join screen."""
         logger.info("Attempting to turn off microphone...")
+        
+        # 📸 Screenshot: Before mic toggle
+        await self._save_debug_screenshot(page, "before_mic_toggle")
         
         try:
             # Use JavaScript to find and click the mic toggle
@@ -677,6 +767,8 @@ class MeetingJoiner:
             if result.startswith('clicked'):
                 logger.info(f"✅ Mic toggle (Method 3): {result}")
                 await asyncio.sleep(1)
+                # 📸 Screenshot: After mic toggle
+                await self._save_debug_screenshot(page, "after_mic_toggle")
                 
                 # Double check - if it still says "Mute", try again or send shortcut
                 check_again = await page.evaluate("""
@@ -865,6 +957,96 @@ class MeetingJoiner:
         logger.warning("❌ Could not find 'Join now' button")
         return False
     
+    async def _handle_teams_permission_dialog(self, page: Page) -> bool:
+        """
+        Handle the Teams browser permission dialog that asks about audio/video.
+        
+        Dialog text: "Are you sure you don't want audio or video?"
+        Button: "Continue without audio or video"
+        
+        Returns:
+            True if dialog was handled or not found (success)
+        """
+        logger.info("Checking for permission dialog...")
+        
+        try:
+            # Wait a moment for dialog to appear
+            await asyncio.sleep(2)
+            
+            # 📸 Screenshot: Check for permission dialog
+            await self._save_debug_screenshot(page, "check_permission_dialog")
+            
+            # Method 1: Look for "Continue without audio or video" button
+            continue_button_texts = [
+                "Continue without audio or video",
+                "Continue without audio",
+                "Continue anyway",
+                "Join without audio or video"
+            ]
+            
+            for button_text in continue_button_texts:
+                try:
+                    # Try exact text match
+                    btn = page.get_by_role("button", name=button_text)
+                    if await btn.count() > 0:
+                        if await btn.first.is_visible(timeout=2000):
+                            logger.info(f"Found permission dialog button: '{button_text}'")
+                            await btn.first.click()
+                            logger.info("✅ Clicked 'Continue without audio or video'")
+                            await asyncio.sleep(2)
+                            
+                            # 📸 Screenshot: After handling dialog
+                            await self._save_debug_screenshot(page, "after_permission_dialog")
+                            return True
+                except Exception as e:
+                    logger.debug(f"Method 1 failed for '{button_text}': {e}")
+                    continue
+            
+            # Method 2: Look for button with partial text match
+            try:
+                btn = page.locator('button:has-text("Continue without")')
+                if await btn.count() > 0 and await btn.first.is_visible(timeout=2000):
+                    await btn.first.click()
+                    logger.info("✅ Clicked continue button (partial match)")
+                    await asyncio.sleep(2)
+                    await self._save_debug_screenshot(page, "after_permission_dialog")
+                    return True
+            except:
+                pass
+            
+            # Method 3: Use JavaScript to find and click
+            try:
+                result = await page.evaluate("""
+                    () => {
+                        const buttons = document.querySelectorAll('button');
+                        for (const btn of buttons) {
+                            const text = (btn.textContent || '').toLowerCase();
+                            if (text.includes('continue without') || 
+                                text.includes('join without') ||
+                                text.includes('continue anyway')) {
+                                btn.click();
+                                return 'clicked_continue';
+                            }
+                        }
+                        return 'not_found';
+                    }
+                """)
+                
+                if result == 'clicked_continue':
+                    logger.info("✅ Clicked continue button via JavaScript")
+                    await asyncio.sleep(2)
+                    await self._save_debug_screenshot(page, "after_permission_dialog")
+                    return True
+            except:
+                pass
+            
+            logger.info("No permission dialog found (or already dismissed)")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error handling permission dialog: {e}")
+            return True  # Don't fail the join process
+    
     async def _wait_for_teams_admission(self, page: Page, timeout: int = 600) -> bool:
         """
         Wait for admission to the Teams meeting (handles lobby).
@@ -880,8 +1062,19 @@ class MeetingJoiner:
         
         start_time = datetime.now()
         last_status_log = start_time
+        last_screenshot_time = start_time
         
         while (datetime.now() - start_time).total_seconds() < timeout:
+            # First, check if permission dialog appeared
+            try:
+                # Quick check for "Continue without audio or video" button
+                continue_btn = page.locator('button:has-text("Continue without")')
+                if await continue_btn.count() > 0 and await continue_btn.first.is_visible(timeout=1000):
+                    logger.info("⚠️ Permission dialog detected during admission wait!")
+                    await self._handle_teams_permission_dialog(page)
+            except:
+                pass
+            
             # Check if we're in the meeting (Leave button visible)
             leave_selectors = get_selectors_for("leave_button")
             
@@ -924,6 +1117,9 @@ class MeetingJoiner:
                 else:
                     logger.info(f"⏳ Waiting for Teams meeting admission... ({elapsed}s elapsed)")
                 last_status_log = datetime.now()
+                
+                # 📸 Screenshot: Periodic lobby/admission status
+                await self._save_debug_screenshot(page, f"waiting_admission_{elapsed}s")
             
             # Check for denial/error messages
             denied_selectors = get_selectors_for("entry_denied")
@@ -951,6 +1147,9 @@ class MeetingJoiner:
             True if captions were enabled successfully.
         """
         logger.info("Attempting to enable Teams live captions...")
+        
+        # 📸 Screenshot: Before caption enable attempt
+        await self._save_debug_screenshot(page, "before_caption_enable")
         
         # First check if captions are already on
         on_selectors = get_selectors_for("captions_on_indicator")
@@ -1104,6 +1303,9 @@ class MeetingJoiner:
             
             if not captions_enabled:
                 logger.warning("Captions not enabled - transcription may not work")
+            else:
+                # 📸 Screenshot: After enabling captions
+                await self._save_debug_screenshot(page, "after_caption_enable")
             
             # 4. Inject caption observer JavaScript
             await page.evaluate(TEAMS_CAPTION_OBSERVER_JS)
