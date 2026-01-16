@@ -27,6 +27,8 @@ from playwright.async_api import (
 from app.config import settings, get_logger
 from app.models import MeetingDetails, MeetingPlatform
 from app.transcription.service import TranscriptionService
+from app.storage.s3_service import S3Service
+from app.storage.meeting_database import MeetingDatabase
 from .teams_scripts import (
     TEAMS_SELECTORS,
     TEAMS_CAPTION_OBSERVER_JS,
@@ -65,6 +67,10 @@ class MeetingJoiner:
 
         self.transcription_service = TranscriptionService()
         
+        # S3 and database services
+        self.s3_service = S3Service()
+        self.meeting_database = MeetingDatabase()
+        
         # Debug screenshot counter for naming
         self._screenshot_counter = 0
 
@@ -84,31 +90,31 @@ class MeetingJoiner:
         # DEBUG SCREENSHOTS DISABLED - Uncomment to enable
         return
         
-        # try:
-        #     # Create screenshots directory if it doesn't exist
-        #     screenshot_dir = Path("logs/screenshots")
-        #     screenshot_dir.mkdir(parents=True, exist_ok=True)
-        #     
-        #     # Generate timestamp and filename
-        #     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        #     self._screenshot_counter += 1
-        #     counter_str = f"{self._screenshot_counter:02d}"
-        #     
-        #     base_filename = f"{timestamp}_{counter_str}_{step_name}"
-        #     png_path = screenshot_dir / f"{base_filename}.png"
-        #     html_path = screenshot_dir / f"{base_filename}.html"
-        #     
-        #     # Take screenshot
-        #     await page.screenshot(path=str(png_path), full_page=True)
-        #     logger.info(f"📸 Screenshot saved: {png_path.name}")
-        #     
-        #     # Save HTML content
-        #     html_content = await page.content()
-        #     html_path.write_text(html_content, encoding='utf-8')
-        #     logger.info(f"💾 HTML saved: {html_path.name}")
-        #     
-        # except Exception as e:
-        #     logger.warning(f"Failed to save debug screenshot for {step_name}: {e}")
+        try:
+            # Create screenshots directory if it doesn't exist
+            screenshot_dir = Path("logs/screenshots")
+            screenshot_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate timestamp and filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._screenshot_counter += 1
+            counter_str = f"{self._screenshot_counter:02d}"
+            
+            base_filename = f"{timestamp}_{counter_str}_{step_name}"
+            png_path = screenshot_dir / f"{base_filename}.png"
+            html_path = screenshot_dir / f"{base_filename}.html"
+            
+            # Take screenshot
+            await page.screenshot(path=str(png_path), full_page=True)
+            logger.info(f"📸 Screenshot saved: {png_path.name}")
+            
+            # Save HTML content
+            html_content = await page.content()
+            html_path.write_text(html_content, encoding='utf-8')
+            logger.info(f"💾 HTML saved: {html_path.name}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to save debug screenshot for {step_name}: {e}")
 
     async def start(self) -> None:
         """
@@ -303,7 +309,7 @@ class MeetingJoiner:
             logger.info("Teams meeting page loaded")
             
             # Wait for page to stabilize
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
             
             # 📸 Screenshot: Page loaded
             await self._save_debug_screenshot(page, "teams_page_loaded")
@@ -318,9 +324,9 @@ class MeetingJoiner:
             # This dialog often appears right after continue browser click
             await self._handle_teams_permission_dialog(page)
             
-            # Wait for pre-join screen to fully load (this is critical!)
+            # Wait for pre-join screen to fully load
             logger.info("Waiting for pre-join screen to load...")
-            await asyncio.sleep(10)
+            await asyncio.sleep(3)
             
             # 📸 Screenshot: Pre-join screen
             await self._save_debug_screenshot(page, "pre_join_screen")
@@ -329,7 +335,7 @@ class MeetingJoiner:
             try:
                 await page.wait_for_selector(
                     'input[placeholder*="name"], button:has-text("Join now")',
-                    timeout=15000
+                    timeout=8000
                 )
                 logger.info("Pre-join screen detected")
             except:
@@ -344,7 +350,7 @@ class MeetingJoiner:
             if not name_entered:
                 # Try again with more wait
                 logger.info("Retrying name entry after additional wait...")
-                await asyncio.sleep(3)
+                await asyncio.sleep(1)
                 await self._teams_enter_name(page, bot_name)
             
             # 📸 Screenshot: After name entry
@@ -483,7 +489,7 @@ class MeetingJoiner:
         try:
             # Wait for the input to be available
             input_field = page.locator('input[placeholder="Type your name"]')
-            await input_field.wait_for(state="visible", timeout=10000)
+            await input_field.wait_for(state="visible", timeout=5000)
             
             # Click to focus
             await input_field.click()
@@ -975,7 +981,7 @@ class MeetingJoiner:
         
         try:
             # Wait a moment for dialog to appear
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             
             # 📸 Screenshot: Check for permission dialog
             await self._save_debug_screenshot(page, "check_permission_dialog")
@@ -1114,7 +1120,7 @@ class MeetingJoiner:
                     continue
             
             # Log status periodically (every 30 seconds)
-            if (datetime.now() - last_status_log).total_seconds() >= 30:
+            if (datetime.now() - last_status_log).total_seconds() >= 10:
                 elapsed = int((datetime.now() - start_time).total_seconds())
                 if in_lobby:
                     logger.info(f"⏳ Still waiting in Teams lobby... ({elapsed}s elapsed)")
@@ -1178,64 +1184,147 @@ class MeetingJoiner:
             except:
                 continue
         
-        # Method 1: Try clicking "More actions" menu
+        # Method 1: Use JavaScript to directly find and click caption button
+        try:
+            logger.info("Method 1: Searching for caption button with JavaScript...")
+            result = await page.evaluate("""
+                () => {
+                    // Search all interactive elements
+                    const elements = document.querySelectorAll('button, [role="menuitem"], [role="button"], [role="menuitemcheckbox"]');
+                    
+                    for (const el of elements) {
+                        const text = (el.textContent || '').toLowerCase();
+                        const label = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const title = (el.getAttribute('title') || '').toLowerCase();
+                        
+                        // Look for caption-related keywords
+                        const hasCaptionKeyword = 
+                            text.includes('live caption') || 
+                            text.includes('captions') ||
+                            text.includes('subtitle') ||
+                            label.includes('live caption') || 
+                            label.includes('captions') ||
+                            label.includes('subtitle') ||
+                            title.includes('live caption') || 
+                            title.includes('captions');
+                        
+                        // Avoid "turn off" buttons (captions already on)
+                        const isOffButton = 
+                            text.includes('turn off') || 
+                            text.includes('stop caption') ||
+                            text.includes('hide caption') ||
+                            label.includes('turn off') ||
+                            title.includes('turn off');
+                        
+                        if (hasCaptionKeyword && !isOffButton) {
+                            // Found a caption button, click it
+                            el.click();
+                            return {success: true, method: 'direct_button', text: el.textContent};
+                        }
+                    }
+                    return {success: false, method: 'direct_button'};
+                }
+            """)
+            
+            if result.get('success'):
+                logger.info(f"✅ Enabled captions via direct button: {result.get('text', 'unknown')}")
+                await asyncio.sleep(2)
+                return True
+            else:
+                logger.info("Direct caption button not found, trying More menu...")
+        except Exception as e:
+            logger.warning(f"JavaScript search method failed: {e}")
+        
+        # Method 2: Try clicking "More actions" menu with force click
         more_actions_selectors = get_selectors_for("more_actions")
         
         for selector in more_actions_selectors:
             try:
                 more_btn = page.locator(selector)
-                if await more_btn.count() > 0 and await more_btn.first.is_visible(timeout=3000):
-                    await more_btn.first.click()
+                if await more_btn.count() > 0:
+                    # Use force click to bypass any overlays
+                    await more_btn.first.click(force=True, timeout=3000)
                     logger.info("Opened 'More actions' menu")
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(2)
                     
-                    # Look for captions option in menu
-                    caption_selectors = get_selectors_for("captions_menu_item")
+                    # Use JavaScript to find caption option in opened menu
+                    result = await page.evaluate("""
+                        () => {
+                            const elements = document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"], button');
+                            
+                            for (const el of elements) {
+                                const text = (el.textContent || '').toLowerCase();
+                                const label = (el.getAttribute('aria-label') || '').toLowerCase();
+                                
+                                if ((text.includes('caption') || label.includes('caption')) && 
+                                    !text.includes('turn off') && !label.includes('turn off')) {
+                                    
+                                    // Check if element is visible
+                                    const rect = el.getBoundingClientRect();
+                                    if (rect.width > 0 && rect.height > 0) {
+                                        el.click();
+                                        return {success: true, found: el.textContent};
+                                    }
+                                }
+                            }
+                            return {success: false};
+                        }
+                    """)
                     
-                    for cap_selector in caption_selectors:
-                        try:
-                            cap_item = page.locator(cap_selector)
-                            if await cap_item.count() > 0 and await cap_item.first.is_visible(timeout=2000):
-                                await cap_item.first.click()
-                                logger.info("Clicked 'Turn on live captions'")
-                                await asyncio.sleep(2)
-                                return True
-                        except:
-                            continue
+                    if result.get('success'):
+                        logger.info(f"✅ Clicked caption option from More menu: {result.get('found')}")
+                        await asyncio.sleep(2)
+                        return True
                     
-                    # Try Language and speech submenu
+                    # Try Language and speech submenu as fallback
                     lang_selectors = get_selectors_for("language_speech_menu")
                     
                     for lang_selector in lang_selectors:
                         try:
                             lang_item = page.locator(lang_selector)
                             if await lang_item.count() > 0 and await lang_item.first.is_visible(timeout=2000):
-                                await lang_item.first.click()
+                                await lang_item.first.click(force=True)
                                 logger.info("Opened 'Language and speech' menu")
-                                await asyncio.sleep(1)
+                                await asyncio.sleep(1.5)
                                 
-                                # Now look for captions toggle
-                                for cap_selector in caption_selectors:
-                                    try:
-                                        cap_item = page.locator(cap_selector)
-                                        if await cap_item.count() > 0 and await cap_item.first.is_visible(timeout=2000):
-                                            await cap_item.first.click()
-                                            logger.info("Enabled captions from Language submenu")
-                                            return True
-                                    except:
-                                        continue
+                                # Search for caption toggle in submenu
+                                result = await page.evaluate("""
+                                    () => {
+                                        const elements = document.querySelectorAll('[role="menuitem"], button, [role="menuitemcheckbox"]');
+                                        
+                                        for (const el of elements) {
+                                            const text = (el.textContent || '').toLowerCase();
+                                            const label = (el.getAttribute('aria-label') || '').toLowerCase();
+                                            
+                                            if ((text.includes('caption') || label.includes('caption')) && 
+                                                !text.includes('off')) {
+                                                const rect = el.getBoundingClientRect();
+                                                if (rect.width > 0 && rect.height > 0) {
+                                                    el.click();
+                                                    return {success: true, found: el.textContent};
+                                                }
+                                            }
+                                        }
+                                        return {success: false};
+                                    }
+                                """)
+                                
+                                if result.get('success'):
+                                    logger.info(f"✅ Enabled captions from Language submenu: {result.get('found')}")
+                                    return True
                         except:
                             continue
                     
                     # Close menu if nothing worked
                     await page.keyboard.press("Escape")
+                    await asyncio.sleep(0.5)
                     break
             except:
                 continue
         
-        # Method 2: Try keyboard shortcut (Ctrl+Shift+U in some Teams versions)
+        # Method 3: Try keyboard shortcut (Ctrl+Shift+U in some Teams versions)
         try:
-            logger.info("Trying keyboard shortcut for captions...")
+            logger.info("Method 3: Trying keyboard shortcut Ctrl+Shift+U...")
             await page.keyboard.press("Control+Shift+U")
             await asyncio.sleep(2)
             
@@ -1244,38 +1333,69 @@ class MeetingJoiner:
                 try:
                     container = page.locator(selector)
                     if await container.count() > 0 and await container.first.is_visible(timeout=1000):
-                        logger.info("Captions enabled via keyboard shortcut")
+                        logger.info("✅ Captions enabled via keyboard shortcut")
                         return True
                 except:
                     continue
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Keyboard shortcut failed: {e}")
         
-        # Method 3: Try using JavaScript to find and click any caption-related button
+        # Method 4: Aggressive search - look in entire DOM for any caption-related element
         try:
+            logger.info("Method 4: Aggressive DOM search for caption elements...")
             result = await page.evaluate("""
                 () => {
-                    const buttons = document.querySelectorAll('button, [role="menuitem"], [role="button"]');
-                    for (const btn of buttons) {
-                        const text = (btn.textContent || '').toLowerCase();
-                        const label = (btn.getAttribute('aria-label') || '').toLowerCase();
-                        if (text.includes('caption') || text.includes('live caption') ||
-                            label.includes('caption') || label.includes('live caption')) {
-                            if (!text.includes('turn off') && !text.includes('stop') && !label.includes('turn off')) {
-                                btn.click();
-                                return 'clicked_caption_button';
+                    // Get all elements with any text content
+                    const allElements = document.querySelectorAll('*');
+                    const captionElements = [];
+                    
+                    for (const el of allElements) {
+                        const text = (el.textContent || '').toLowerCase();
+                        const label = (el.getAttribute('aria-label') || '').toLowerCase();
+                        const dataId = (el.getAttribute('data-tid') || '').toLowerCase();
+                        
+                        // Check for caption-related attributes
+                        if (text.includes('caption') || label.includes('caption') || dataId.includes('caption')) {
+                            // Must be clickable
+                            const tagName = el.tagName.toLowerCase();
+                            const role = el.getAttribute('role');
+                            
+                            if (tagName === 'button' || role === 'button' || role === 'menuitem' || role === 'menuitemcheckbox') {
+                                // Avoid "off" buttons
+                                if (!text.includes('off') && !label.includes('off')) {
+                                    captionElements.push({
+                                        tag: tagName,
+                                        text: el.textContent.substring(0, 50),
+                                        label: label.substring(0, 50),
+                                        role: role
+                                    });
+                                    
+                                    // Try to click it
+                                    try {
+                                        el.click();
+                                        return {success: true, clicked: el.textContent.substring(0, 50)};
+                                    } catch(e) {
+                                        continue;
+                                    }
+                                }
                             }
                         }
                     }
-                    return 'not_found';
+                    
+                    return {success: false, found: captionElements};
                 }
             """)
-            if result == 'clicked_caption_button':
-                logger.info("Enabled captions via JavaScript button click")
+            
+            if result.get('success'):
+                logger.info(f"✅ Caption enabled via aggressive search: {result.get('clicked')}")
                 await asyncio.sleep(2)
                 return True
-        except:
-            pass
+            else:
+                found = result.get('found', [])
+                if found:
+                    logger.warning(f"Found {len(found)} caption-related elements but couldn't click: {found[:3]}")
+        except Exception as e:
+            logger.error(f"Aggressive search failed: {e}")
         
         logger.warning("Could not enable Teams captions - menu options not found")
         return False
@@ -1288,8 +1408,8 @@ class MeetingJoiner:
         try:
             logger.info("Starting Teams transcription...")
             
-            # 1. Start transcription service
-            self.transcription_service.start_transcription(meeting.title)
+            # 1. Start transcription service with meeting details
+            self.transcription_service.start_transcription(meeting.title, meeting)
             
             # 2. Expose Python callback to page
             async def on_transcript(data):
@@ -1764,6 +1884,53 @@ class MeetingJoiner:
                 logger.error(f"Error monitoring meeting {meeting.title}: {e}")
         finally:
             logger.info(f"Closing session for {meeting.title}")
+            
+            # Stop transcription
+            self.transcription_service.stop_transcription()
+            
+            # Export to JSON and upload to S3
+            try:
+                logger.info("Exporting meeting data to JSON...")
+                meeting_data = self.transcription_service.export_to_json()
+                
+                # Upload to S3 if enabled
+                if self.s3_service.is_enabled():
+                    s3_path = self.s3_service.upload_meeting_json(meeting_data)
+                    if s3_path:
+                        # Add to local database
+                        self.meeting_database.add_meeting(
+                            meeting_url=meeting.meeting_url,
+                            s3_path=s3_path,
+                            metadata={
+                                "meeting_id": meeting.meeting_id,
+                                "title": meeting.title,
+                                "platform": meeting.platform,
+                                "export_timestamp": meeting_data.get("export_timestamp")
+                            }
+                        )
+                        logger.info(f"Successfully exported and uploaded meeting data to S3: {s3_path}")
+                    else:
+                        logger.warning("S3 upload failed")
+                else:
+                    logger.info("S3 service not enabled. Saving JSON locally only.")
+                    # Save JSON locally as backup
+                    import json
+                    from pathlib import Path
+                    json_dir = Path("transcripts/json")
+                    json_dir.mkdir(parents=True, exist_ok=True)
+                    json_filename = f"{meeting.meeting_id}_{meeting_data['export_timestamp'].replace(':', '-')}.json"
+                    json_path = json_dir / json_filename
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(meeting_data, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Meeting data saved locally: {json_path}")
+                
+                # Reset metadata for next meeting
+                self.transcription_service.reset_metadata()
+                
+            except Exception as export_error:
+                logger.error(f"Error exporting meeting data: {export_error}")
+            
+            # Close context and cleanup
             await context.close()
             if meeting.meeting_url in self.active_contexts:
                 del self.active_contexts[meeting.meeting_url]
@@ -1820,8 +1987,8 @@ class MeetingJoiner:
             # Hook console logs to see JS errors in Python logs
             page.on("console", lambda msg: logger.info(f"BROWSER CONSOLE: {msg.text}"))
             
-            # 1. Start service
-            self.transcription_service.start_transcription(meeting.title)
+            # 1. Start service with meeting details
+            self.transcription_service.start_transcription(meeting.title, meeting)
 
             # 2. Expose python callback
             async def on_transcript(data):

@@ -7,6 +7,9 @@ A powerful, automated meeting assistant built with **FastAPI** and **Playwright*
 - **Dual Calendar Sync**: Automatically polls both Gmail and Outlook for upcoming meeting invites.
 - **Auto-Join**: Uses Playwright to join meetings on time, handling lobby waits and admission.
 - **Transcription**: Captures meeting audio and captions in real-time.
+- **Meeting Data Export**: Automatically exports meeting metadata and transcripts to JSON after each meeting.
+- **AWS S3 Integration**: Uploads meeting data to S3 for cloud storage and easy retrieval.
+- **Meeting Database**: Maintains local JSON database mapping meeting URLs to S3 file paths.
 - **Manual Join**: Trigger the bot to join any meeting URL via a simple API call.
 - **Unified API**: Control everything through a clean FastAPI interface (Swagger UI included).
 - **Stealth Mode**: Advanced browser fingerprinting to avoid bot detection.
@@ -62,7 +65,17 @@ SCHEDULER_JOIN_BEFORE_START_MINUTES=1
 
 # Backend Port
 AUTH_SERVER_PORT=8888
+
+# AWS S3 (Optional - for meeting data export)
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_S3_BUCKET_NAME=your-bucket-name
+AWS_REGION=us-east-1
 ```
+
+**Note**: If AWS credentials are not configured, meeting data will be saved locally in `transcripts/json/` directory.
+
+See [MEETING_EXPORT_FEATURE.md](MEETING_EXPORT_FEATURE.md) for detailed documentation on the meeting data export feature.
 
 ## 🏃 Usage
 
@@ -98,13 +111,45 @@ meeting_bot/
 │   ├── auth_server/    # OAuth logic and token management
 │   ├── config/         # Settings and Logging
 │   ├── email_service/  # Gmail & Outlook implementations
-│   ├── meeting_joiner/ # Playwright automation logic
+│   ├── meeting_handler/# Playwright automation logic
+│   ├── scheduler/      # Meeting scheduling logic
+│   ├── storage/        # S3 and database services
+│   ├── transcription/  # Transcription service
 │   └── bot.py          # Core coordinator
 ├── credentials/        # Storage for OAuth tokens
-├── transcripts/        # Generated meeting transcripts
-├── main.py             # FastAPI entry point
-└── requirements.txt    # Python dependencies
+├── data/              # Meeting database
+├── transcripts/       # Generated meeting transcripts
+│   └── json/          # JSON exports (if S3 not configured)
+├── main.py            # FastAPI entry point
+└── requirements.txt   # Python dependencies
 ```
+
+## 📊 Meeting Data Export
+
+After each meeting ends, the system automatically:
+1. **Creates JSON export** with metadata (meeting ID, URL, duration, participants, etc.) and full transcription
+2. **Uploads to S3** (if configured) for cloud storage
+3. **Updates local database** with meeting URL → S3 path mapping
+
+Example JSON structure:
+```json
+{
+  "metadata": {
+    "meeting_id": "TestMeeting",
+    "meeting_url": "https://meet.google.com/abc-defg-hij",
+    "platform": "google_meet",
+    "start_time": "2025-01-16T10:30:00",
+    "end_time": "2025-01-16T11:15:00",
+    "duration_seconds": 2700,
+    "participant_names": ["Alice", "Bob", "Charlie"]
+  },
+  "transcription": [
+    {"timestamp": "10:30:15", "speaker": "Alice", "text": "Hello everyone!"}
+  ]
+}
+```
+
+See [MEETING_EXPORT_FEATURE.md](MEETING_EXPORT_FEATURE.md) for complete documentation.
 
 ## 🛡️ License
 

@@ -10,4 +10,8 @@ __pycache__
 logs/
 credentials/gmail_token.json
 credentials/outlook_token.json
+transcripts/data/meeting_database.json
 transcripts/
+IMPLEMENTATION_SUMMARY.md
+MEETING_EXPORT_FEATURE.md
+QUICK_REFERENCE.md
