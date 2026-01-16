@@ -311,6 +311,10 @@ class MeetingJoiner:
             # 📸 Screenshot: After handling continue browser
             await self._save_debug_screenshot(page, "after_continue_browser")
             
+            # --- Step 3: Handle permission dialog early (before name entry) ---
+            # This dialog often appears right after continue browser click
+            await self._handle_teams_permission_dialog(page)
+            
             # Wait for pre-join screen to fully load (this is critical!)
             logger.info("Waiting for pre-join screen to load...")
             await asyncio.sleep(10)
@@ -330,7 +334,7 @@ class MeetingJoiner:
             
             await asyncio.sleep(2)
             
-            # --- Step 3: Enter display name ---
+            # --- Step 4: Enter display name ---
             bot_name = meeting.title or settings.bot.teams_bot_name
             name_entered = await self._teams_enter_name(page, bot_name)
             
@@ -343,7 +347,7 @@ class MeetingJoiner:
             # 📸 Screenshot: After name entry
             await self._save_debug_screenshot(page, "after_name_entry")
             
-            # --- Step 4: Mute microphone and camera before joining ---
+            # --- Step 5: Mute microphone and camera before joining ---
             await self._teams_mute_before_join(page)
             
             # 📸 Screenshot: After mute
@@ -355,7 +359,7 @@ class MeetingJoiner:
             # 📸 Screenshot: Before clicking join
             await self._save_debug_screenshot(page, "before_clicking_join")
             
-            # --- Step 5: Click "Join now" button ---
+            # --- Step 6: Click "Join now" button ---
             join_success = await self._teams_click_join(page)
             if not join_success:
                 logger.warning("First join attempt failed, retrying...")
@@ -366,10 +370,7 @@ class MeetingJoiner:
             await asyncio.sleep(2)
             await self._save_debug_screenshot(page, "after_clicking_join")
             
-            # Handle permission dialog if it appears
-            await self._handle_teams_permission_dialog(page)
-            
-            # --- Step 6: Wait for admission (lobby handling) ---
+            # --- Step 7: Wait for admission (lobby handling) ---
             admitted = await self._wait_for_teams_admission(page, timeout=600)
             
             if not admitted:
@@ -1507,16 +1508,32 @@ class MeetingJoiner:
             logger.info(f"Navigating to {meeting.meeting_url}...")
             await page.goto(meeting.meeting_url, wait_until="load")
             
+            # Wait for page to stabilize
+            await asyncio.sleep(3)
+            
+            # 📸 Screenshot: Google Meet page loaded
+            await self._save_debug_screenshot(page, "gmeet_page_loaded")
+            
             # --- 1. Dismiss Device Checks ---
             # Try to click "Continue without microphone and camera"
             try:
                 btn = page.get_by_role('button', name='Continue without microphone and camera')
                 if await btn.is_visible(timeout=5000):
-                    await btn.click()
+                    try:
+                        await btn.click(timeout=5000)
+                    except Exception as e:
+                        logger.warning(f"Normal click failed: {e}. Trying force click...")
+                        await btn.click(force=True)
                     logger.info("Clicked 'Continue without microphone and camera'")
+                    await asyncio.sleep(1)
+                    # 📸 Screenshot: After dismissing device check
+                    await self._save_debug_screenshot(page, "gmeet_after_device_dismiss")
             except Exception:
                 pass
 
+            # 📸 Screenshot: Before name entry check
+            await self._save_debug_screenshot(page, "gmeet_before_name_check")
+            
             # --- 2. Auth & Input Name (Guest vs Login) ---
             # --- 2. Auth & Input Name (Guest vs Login) ---
             # Try multiple selectors for the name input
@@ -1542,6 +1559,8 @@ class MeetingJoiner:
                 logger.info(f"Guest mode detected. Entering bot name: {bot_name}...")
                 await name_input.fill(bot_name)
                 await asyncio.sleep(1)
+                # 📸 Screenshot: After entering name
+                await self._save_debug_screenshot(page, "gmeet_after_name_entry")
                 # Proceed to click Join
             else:
                 # If no guest input, check for login
@@ -1555,19 +1574,34 @@ class MeetingJoiner:
                 is_signin_prompt = await page.get_by_text("Sign in to join").is_visible()
                 
                 if is_login_page or is_signin_prompt:
+                    # 📸 Screenshot: Login page detected
+                    await self._save_debug_screenshot(page, "gmeet_login_page_detected")
                     logger.info("Login page/prompt detected. Attempting auto-login...")
                     if not await self._perform_auto_login(page):
                          logger.error("Auto-login failed or no credentials. Aborting.")
+                         # 📸 Screenshot: Login failed
+                         await self._save_debug_screenshot(page, "gmeet_login_failed")
                          return
+                    # 📸 Screenshot: After successful login
+                    await self._save_debug_screenshot(page, "gmeet_after_login")
                 else:
                     logger.warning("Could not find name input AND not clearly on login page. Continuing to look for Join buttons...")
+                    # 📸 Screenshot: No name input or login detected
+                    await self._save_debug_screenshot(page, "gmeet_no_name_or_login")
 
             # --- 2.5 Ensure Muted in Lobby ---
             # Click buttons to mute if they are active
             logger.info("Ensuring microphone and camera are muted in lobby...")
+            # 📸 Screenshot: Before mute check
+            await self._save_debug_screenshot(page, "gmeet_before_mute")
             # await self._ensure_mute(page)
+            # 📸 Screenshot: After mute check
+            await self._save_debug_screenshot(page, "gmeet_after_mute")
 
             # --- 3. Click Join Action (Ask to Join / Join Now) ---
+            # 📸 Screenshot: Before join button search
+            await self._save_debug_screenshot(page, "gmeet_before_join_click")
+            
             join_clicked = False
             clicked_btn_name = ""
             
@@ -1576,8 +1610,15 @@ class MeetingJoiner:
                 try:
                     btn = page.get_by_role("button", name=btn_name, exact=True)
                     if await btn.is_visible(timeout=2000):
-                        await btn.click()
+                        try:
+                            await btn.click(timeout=5000)
+                        except Exception as click_error:
+                            logger.warning(f"Normal click failed for '{btn_name}': {click_error}. Trying force click...")
+                            await btn.click(force=True)
                         logger.info(f"Clicked '{btn_name}' button.")
+                        await asyncio.sleep(2)
+                        # 📸 Screenshot: After clicking join
+                        await self._save_debug_screenshot(page, f"gmeet_after_click_{btn_name.replace(' ', '_').lower()}")
                         join_clicked = True
                         clicked_btn_name = btn_name
                         break
@@ -1585,6 +1626,8 @@ class MeetingJoiner:
             
             if not join_clicked:
                 logger.warning("No 'Join' button found. Check browser.")
+                # 📸 Screenshot: No join button found
+                await self._save_debug_screenshot(page, "gmeet_no_join_button")
                 # We continue anyway, maybe it auto-joined?
             else:
                 logger.info(f"Join action initiated via '{clicked_btn_name}'...")
@@ -1600,13 +1643,19 @@ class MeetingJoiner:
             logger.info("Waiting for meeting admission...")
             max_wait_time = 600 # 10 minutes wait for admission?
             start_time = datetime.now()
+            last_screenshot_time = start_time
             admitted = False
+            
+            # 📸 Screenshot: Start of admission wait
+            await self._save_debug_screenshot(page, "gmeet_waiting_admission_start")
             
             while (datetime.now() - start_time).total_seconds() < max_wait_time:
                 # Check for success indicator
                 leave_btn = page.locator('button[aria-label*="Leave call"]')
                 if await leave_btn.count() > 0 and await leave_btn.first.is_visible():
                     logger.info(f"Successfully entered meeting {meeting.title} at {datetime.now()}")
+                    # 📸 Screenshot: Successfully admitted
+                    await self._save_debug_screenshot(page, "gmeet_successfully_admitted")
                     admitted = True
                     break
                 
@@ -1619,10 +1668,19 @@ class MeetingJoiner:
 
                 # Check if denied? (Optional)
                 
+                # 📸 Screenshot: Periodic status during wait (every 30 seconds)
+                elapsed = (datetime.now() - last_screenshot_time).total_seconds()
+                if elapsed >= 30:
+                    total_elapsed = int((datetime.now() - start_time).total_seconds())
+                    await self._save_debug_screenshot(page, f"gmeet_waiting_admission_{total_elapsed}s")
+                    last_screenshot_time = datetime.now()
+                
                 await asyncio.sleep(2)
             
             if not admitted:
                 logger.error("Timed out waiting for meeting admission (10 mins). Aborting.")
+                # 📸 Screenshot: Admission timeout
+                await self._save_debug_screenshot(page, "gmeet_admission_timeout")
                 # Logic to clean up?
                 # For now, let monitor handle close? Or return?
                 # Better to return.
@@ -1639,6 +1697,9 @@ class MeetingJoiner:
 
             # Start Transcription
             await self._start_transcription(page, meeting)
+            
+            # 📸 Screenshot: After transcription setup
+            await self._save_debug_screenshot(page, "gmeet_after_transcription_setup")
 
             # --- 6. Lobby Wait & Monitor (Spawn Background Task) ---
             # We spawn a monitoring loop that keeps the context alive until meeting ends
@@ -1647,6 +1708,11 @@ class MeetingJoiner:
 
         except Exception as e:
             logger.error(f"Error during join flow: {e}")
+            # 📸 Screenshot: Error state
+            try:
+                await self._save_debug_screenshot(page, "gmeet_join_error")
+            except:
+                pass
             await context.close()
             if meeting.meeting_url in self.active_contexts:
                 del self.active_contexts[meeting.meeting_url]
@@ -1883,12 +1949,19 @@ class MeetingJoiner:
                     turn_off_btn = page.locator('button[aria-label*="Turn off captions"]')
                     if await turn_off_btn.count() > 0 and await turn_off_btn.first.is_visible():
                         logger.info("Captions are ON (Found 'Turn off captions' button).")
-                        # We can either break (assume they stay on) or continue checking periodically
-                        # Breaking is safer to reduce noise, unless user turns them off manually.
-                        # Let's break for now.
+                        break
+                    
+                    # 1.5 Try keyboard shortcut first (most reliable - bypasses overlays)
+                    logger.info("Attempting to enable captions with keyboard shortcut 'c'...")
+                    await page.keyboard.press("c")
+                    await asyncio.sleep(2)
+                    
+                    # Check if it worked
+                    if await turn_off_btn.count() > 0 and await turn_off_btn.first.is_visible():
+                        logger.info("Successfully enabled captions with keyboard shortcut 'c'.")
                         break 
-
-                    # 2. Check if a caption button indicates "Pressed" (Active)
+                    
+                    # 2. Verify button state indicates captions are on
                     selectors = [
                         'button[jsname="r8qRAd"]',
                         'button[aria-label*="Turn on captions"]',
@@ -1896,9 +1969,7 @@ class MeetingJoiner:
                         'button[icon="cc"]'
                     ]
                     
-                    found_button = False
                     captions_already_on = False
-                    target_btn = None
                     
                     for sel in selectors:
                         btns = page.locator(sel)
@@ -1908,9 +1979,6 @@ class MeetingJoiner:
                             btn = btns.nth(i)
                             if not await btn.is_visible():
                                 continue
-                                
-                            found_button = True
-                            target_btn = btn
                             
                             is_pressed = await btn.get_attribute("aria-pressed")
                             label = await btn.get_attribute("aria-label") or ""
@@ -1919,49 +1987,15 @@ class MeetingJoiner:
                                 captions_already_on = True
                                 break
                         
-                        if found_button:
+                        if captions_already_on:
                             break
                     
                     if captions_already_on:
-                        logger.info("Captions are ON (Button state is pressed/active).")
-                        break 
-
-                    # 3. If we found a button but it's OFF, click it
-                    if found_button and target_btn:
-                        logger.info("Found caption button (currently OFF). Clicking it...")
-                        await target_btn.click()
-                        await asyncio.sleep(2)
-                        
-                        is_pressed_now = await target_btn.get_attribute("aria-pressed")
-                        if is_pressed_now == "true":
-                            logger.info("Successfully enabled captions.")
-                            break
-                        else:
-                            logger.info("Clicked button but state didn't change immediately.")
-
-                    # 4. If NO button found, try "More Options" menu
-                    elif not found_button:
-                        # Only log this occasionally to avoid spam if it really doesn't exist
-                        logger.debug("Direct caption button NOT found. Checking 'More options'...")
-                        
-                        more_options = page.locator('button[aria-label="More options"]')
-                        if await more_options.count() > 0 and await more_options.first.is_visible():
-                            await more_options.first.click()
-                            await asyncio.sleep(1)
-                            
-                            menu_item = page.locator('li[role="menuitem"]:has-text("Turn on captions")')
-                            if await menu_item.count() > 0 and await menu_item.first.is_visible():
-                                logger.info("Found 'Turn on captions' in menu. Clicking...")
-                                await menu_item.first.click()
-                                await asyncio.sleep(2)
-                                break 
-                            else:
-                                logger.debug("'Turn on captions' not found in menu. Closing menu.")
-                                await page.keyboard.press("Escape")
-                        else:
-                            # 5. Last Resort: Keyboard Shortcut
-                            logger.info("Attempting 'c' shortcut as fallback.")
-                            await page.keyboard.press("c")
+                        logger.info("Captions are ON (verified via button state).")
+                        break
+                    
+                    # If keyboard shortcut didn't work after first attempt, log and retry next cycle
+                    logger.warning("Keyboard shortcut 'c' didn't enable captions yet. Will retry next cycle...")
                         
                 except Exception as e:
                      logger.warning(f"Error in caption logic: {e}")
@@ -1973,7 +2007,3 @@ class MeetingJoiner:
             logger.info("Caption check task cancelled.")
         except Exception as e:
             logger.error(f"Fatal error in caption loop: {e}")
-
-
-        except Exception as e:
-            logger.error(f"Failed to start transcription logic: {e}")
