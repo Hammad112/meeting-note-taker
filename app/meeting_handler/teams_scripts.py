@@ -269,7 +269,7 @@ TEAMS_SELECTORS = {
 # V10: Uses Teams' actual DOM structure - data-tid="author" and data-tid="closed-caption-text"
 TEAMS_CAPTION_OBSERVER_JS = """
 (() => {
-    console.log("Teams Caption Observer V10 - Using DOM Structure");
+    console.log("Teams Caption Observer V11 - Enhanced System Message Filtering");
     
     const emittedSet = new Set();
     let captionCount = 0;
@@ -328,11 +328,28 @@ TEAMS_CAPTION_OBSERVER_JS = """
     function emitCaption(speaker, text) {
         if (!text || text.length < 3) return;
         
-        // Skip UI/system text
+        // Skip UI/system text and notifications
         const lower = text.toLowerCase();
+        
+        // System messages
         if (lower.includes('turn on') || lower.includes('live captions') || 
             lower.includes('captions are turned on') || lower.includes('joined the') ||
             lower.includes('left the') || lower.includes('unknown user')) {
+            return;
+        }
+        
+        // Teams notifications and permission messages
+        if (lower.includes('new notification') || lower.includes('teams needs permission') ||
+            lower.includes('open your privacy settings') || lower.includes('allow it') ||
+            lower.includes('access your mic') || lower.includes('access your camera') ||
+            lower.includes('permission to access') || lower.includes('privacy settings')) {
+            console.log("[FILTERED] System notification: " + text.substring(0, 50));
+            return;
+        }
+        
+        // UI actions and buttons
+        if (lower.includes('add ') && lower.includes(' to ') && text.length < 50) {
+            console.log("[FILTERED] UI action text: " + text.substring(0, 50));
             return;
         }
         
@@ -511,36 +528,40 @@ TEAMS_CAPTION_OBSERVER_JS = """
             }
         }
         
-        // FALLBACK: Also check old selectors for compatibility
-        const fallbackSelectors = [
-            '[class*="caption" i]',
-            '[class*="Caption"]',
-            '[data-tid*="caption" i]',
-            '[aria-live="polite"]'
-        ];
+        // FALLBACK: Check for caption containers (NOT notifications)
+        // Only look for actual caption rendering areas, not UI alerts
+        const captionContainers = document.querySelectorAll(
+            '[data-tid="closed-captions-renderer"], ' +
+            '[class*="captions-container" i]:not([class*="alert"]):not([class*="notification"])'
+        );
         
-        let idx = 0;
-        
-        for (const selector of fallbackSelectors) {
+        for (const container of captionContainers) {
             try {
-                const elements = document.querySelectorAll(selector);
-                for (const el of elements) {
-                    // Skip if already processed as closed-caption-text
-                    if (el.hasAttribute('data-tid') && el.getAttribute('data-tid') === 'closed-caption-text') {
-                        continue;
-                    }
-                    if (el.tagName === 'BUTTON' || el.closest('button')) continue;
-                    
-                    const text = el.innerText?.trim();
-                    if (!text || text.length < 2 || text.length > 1000) continue;
-                    
-                    const lines = text.split(/[\\n\\r]+/);
-                    for (let i = 0; i < lines.length; i++) {
-                        processLine(lines[i], 'fallback_' + idx + '_' + i, i, lines);
-                    }
-                    idx++;
+                // Skip if it's inside a notification/alert
+                if (container.closest('[role="alert"], [data-tid*="alert"], [data-tid*="notification"]')) {
+                    continue;
                 }
-            } catch(e) {}
+                
+                // Get caption text from inside the container
+                const captionEls = container.querySelectorAll('[class*="caption-text" i], [class*="Captions"] span');
+                
+                for (const el of captionEls) {
+                    const text = el.innerText?.trim();
+                    if (!text || text.length < 2) continue;
+                    
+                    let captionId = el.getAttribute('data-caption-id');
+                    if (!captionId) {
+                        captionId = 'fallback_' + Date.now() + '_' + Math.random();
+                        el.setAttribute('data-caption-id', captionId);
+                    }
+                    
+                    // Look for speaker name near this element
+                    const speaker = findSpeakerNearElement(el) || currentSpeaker;
+                    scheduleEmit(captionId, speaker, text);
+                }
+            } catch(e) {
+                console.error("Error in fallback caption processing:", e);
+            }
         }
     }
     
@@ -561,7 +582,7 @@ TEAMS_CAPTION_OBSERVER_JS = """
     // Initial
     setTimeout(scanCaptions, 500);
     
-    console.log("Teams Caption Observer V10 Ready - Using data-tid selectors");
+    console.log("Teams Caption Observer V11 Ready - Filtering system notifications");
 })();
 """
 
