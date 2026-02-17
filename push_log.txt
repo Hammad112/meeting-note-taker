@@ -1,0 +1,146 @@
+git : remote: error: GH013: Repository 
+rule violations found for 
+refs/heads/final_code.        
+At line:1 char:1
++ git push origin final_code 2>&1 | 
+Out-File -Encoding ASCII push_log.t ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpeci 
+   fied: (remote: error: ...l_code.    
+        :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCo 
+   mmandError
+ 
+remote: 
+remote: - GITHUB PUSH PROTECTION       
+ 
+remote:   ?????????????????????????????
+???????????????????????????????????????
+???????????????????????????????????????
+????????????????        
+remote:     Resolve the following 
+violations before pushing again        
+remote: 
+remote:     - Push cannot contain 
+secrets        
+remote: 
+remote:             
+remote:      (?) Learn how to resolve 
+a blocked push        
+remote:      https://docs.github.com/co
+de-security/secret-scanning/working-wit
+h-secret-scanning-and-push-protection/w
+orking-with-push-protection-from-the-co
+mmand-line#resolving-a-blocked-push    
+    
+remote:             
+remote:      (?) This repository does 
+not have Secret Scanning enabled, but 
+is eligible. Enable Secret Scanning to 
+view and manage detected secrets.      
+  
+remote:      Visit the repository 
+settings page, https://github.com/Hamma
+d112/meeting-note-taker/settings/securi
+ty_analysis        
+remote:             
+remote:             
+remote:       ?????? Microsoft Azure 
+Entra ID Token ????????????????????????
+????????????????????????????????????   
+     
+remote:        locations:        
+remote:          - commit: c1be672dfe9b
+ff0b64c4342e2b7200aa5d43fafc        
+remote:            path: 
+credentials/outlook_token.json:5       
+ 
+remote:          - commit: 38e1b184250a
+3c5eeacbd922c669571057b8d051        
+remote:            path: 
+credentials/outlook_token.json:5       
+ 
+remote:          - commit: ff441bad07a4
+5136d0798cc48068bd3aa4e2f8a9        
+remote:            path: 
+credentials/outlook_token.json:5       
+ 
+remote:          - commit: caac55df50ab
+9dcc5d0612f6bb11d31658b974e5        
+remote:            path: 
+credentials/outlook_token.json:5       
+ 
+remote:          - commit: 9c3ca5785f47
+ed50f21cc7e1e451b59baa3f80f0        
+remote:            path: 
+credentials/outlook_token.json:5       
+ 
+remote:             
+remote:        (?) To push, remove 
+secret from commit(s) or follow this 
+URL to allow the secret.        
+remote:        https://github.com/Hamma
+d112/meeting-note-taker/security/secret
+-scanning/unblock-secret/39oFCFXIFGGRV3
+JuuF0PC4MC7aZ        
+remote:             
+remote:             
+remote:       ?????? Google OAuth 
+Client ID ?????????????????????????????
+???????????????????????????????????????
+????????????????        
+remote:        locations:        
+remote:          - commit: 96fee32d93d3
+72195326fdc5a9522a0d8218a512        
+remote:            path: 
+scripts/get-google-refresh-token.js:14 
+       
+remote:          - commit: 96fee32d93d3
+72195326fdc5a9522a0d8218a512        
+remote:            path: 
+scripts/oauth-callback-server.js:16    
+    
+remote:             
+remote:        (?) To push, remove 
+secret from commit(s) or follow this 
+URL to allow the secret.        
+remote:        https://github.com/Hamma
+d112/meeting-note-taker/security/secret
+-scanning/unblock-secret/39oFCC5YSJH0h3
+OI60kqRv1jsRo        
+remote:             
+remote:             
+remote:       ?????? Google OAuth 
+Client Secret ?????????????????????????
+???????????????????????????????????????
+????????        
+remote:        locations:        
+remote:          - commit: 96fee32d93d3
+72195326fdc5a9522a0d8218a512        
+remote:            path: 
+scripts/get-google-refresh-token.js:15 
+       
+remote:          - commit: 96fee32d93d3
+72195326fdc5a9522a0d8218a512        
+remote:            path: 
+scripts/oauth-callback-server.js:17    
+    
+remote:             
+remote:        (?) To push, remove 
+secret from commit(s) or follow this 
+URL to allow the secret.        
+remote:        https://github.com/Hamma
+d112/meeting-note-taker/security/secret
+-scanning/unblock-secret/39oFCDSppVcJSX
+dDAgHyHl4RhVH        
+remote:             
+remote: 
+remote: 
+To https://github.com/Hammad112/meeting
+-note-taker.git
+ ! [remote rejected] final_code -> 
+final_code (push declined due to 
+repository rule violations)
+error: failed to push some refs to 'htt
+ps://github.com/Hammad112/meeting-note-
+taker.git'
